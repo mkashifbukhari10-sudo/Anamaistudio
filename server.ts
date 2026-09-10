@@ -778,22 +778,37 @@ function validateAndStandardizeTimeline(
  * app is therefore usable as a Vercel Function handler (api/index.ts), or
  * wrapped by dev-server.ts locally, or by prod-server.ts when self-hosting.
  */
-export function createApp() {
+export interface CreateAppOptions {
+  /**
+   * Rewrite paths that do not start with /api so they do.
+   *
+   * Enable this ONLY where the app is mounted as a dedicated API function
+   * (api/index.ts on Vercel), because there every request that arrives is an
+   * API call and the prefix may or may not have survived the rewrite.
+   *
+   * It must stay OFF wherever the app shares an origin with Vite or static
+   * files: a blanket rewrite would capture /src/main.tsx, /assets/* and every
+   * other asset request, and the frontend would never boot.
+   */
+  normalizeApiPrefix?: boolean;
+}
+
+export function createApp(options: CreateAppOptions = {}) {
   const app = express();
 
   // Vercel caps a Function request/response body at 4.5 MB. Keeping Express
   // aligned means an oversized payload fails the same way in every runtime.
   app.use(express.json({ limit: "4.5mb" }));
 
-  // On Vercel every /api/* path is rewritten to this one function. Depending
-  // on how the request arrives the handler may or may not still carry the
-  // /api prefix, so normalise it before the route table below is consulted.
-  app.use((req, _res, next) => {
-    if (req.url !== "/api" && !req.url.startsWith("/api/")) {
-      req.url = `/api${req.url.startsWith("/") ? req.url : `/${req.url}`}`;
-    }
-    next();
-  });
+  // Opt-in only - see CreateAppOptions.normalizeApiPrefix.
+  if (options.normalizeApiPrefix) {
+    app.use((req, _res, next) => {
+      if (req.url !== "/api" && !req.url.startsWith("/api/")) {
+        req.url = `/api${req.url.startsWith("/") ? req.url : `/${req.url}`}`;
+      }
+      next();
+    });
+  }
 
   // API Health Check
   app.get("/api/health", (_req, res) => {

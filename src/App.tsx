@@ -19,7 +19,6 @@ import { StyleSelector } from './components/StyleSelector';
 import { StoryDisplay } from './components/StoryDisplay';
 import { LoadingState } from './components/LoadingState';
 import { ProductionPackageModal } from './components/ProductionPackageModal';
-import { SAMPLE_GAJAR_TAMATAR_STORY } from './data/sampleStory';
 import { playPopSound, playSuccessChime } from './utils/audio';
 import {
   Sparkles,
@@ -85,7 +84,9 @@ export default function App() {
   const [regeneratingReferenceCharId, setRegeneratingReferenceCharId] = useState<string | null>(null);
   const [generatingImageCharacterId, setGeneratingImageCharacterId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [generatedStory, setGeneratedStory] = useState<VeggieStory | null>(SAMPLE_GAJAR_TAMATAR_STORY);
+  // Starts empty on purpose. Seeding this with the bundled sample made a
+  // failed generation look like a finished 10-minute / 60-scene story.
+  const [generatedStory, setGeneratedStory] = useState<VeggieStory | null>(null);
 
   // Layout & Studio Navigation State
   const [activeStudioTab, setActiveStudioTab] = useState<StudioTab>('story');
@@ -486,24 +487,9 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleLoadSampleStory = () => {
-    setGeneratedStory(SAMPLE_GAJAR_TAMATAR_STORY);
-    setLanguage(SAMPLE_GAJAR_TAMATAR_STORY.language);
-    setStoryMode(SAMPLE_GAJAR_TAMATAR_STORY.storyMode);
-    setTopic('Gajar aur Tamatar ki dosti');
-    setDuration('10 minutes');
-    setCustomMinutes(10);
-    setAnimationStyle(SAMPLE_GAJAR_TAMATAR_STORY.animationStyle);
-    setShowSetupWorkbench(false);
-    setActiveStudioTab('story');
-    handleSuccessSound();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
   const handleSelectStudioTab = (tab: StudioTab) => {
-    if (!generatedStory) {
-      setGeneratedStory(SAMPLE_GAJAR_TAMATAR_STORY);
-    }
+    // With no story yet, the workspace stays on the setup workbench rather
+    // than falling back to demo content.
     setShowSetupWorkbench(false);
     setActiveStudioTab(tab);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -562,7 +548,6 @@ export default function App() {
           story={generatedStory}
           isOpenMobile={isMobileSidebarOpen}
           onCloseMobile={() => setIsMobileSidebarOpen(false)}
-          onLoadSampleStory={handleLoadSampleStory}
         />
 
         {/* Studio Main Workspace */}

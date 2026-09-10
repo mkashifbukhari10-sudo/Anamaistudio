@@ -11,4 +11,4 @@ import { createApp } from "../server.js";
  * All provider credentials are read from process.env inside the provider
  * adapters, so they stay server-side and never reach the browser bundle.
  */
-export default createApp();
+export default createApp({ normalizeApiPrefix: true });
