@@ -23,15 +23,15 @@ export const aiProviders = new AIProviderManager();
 // Registration order defines the text-generation priority and the fallback
 // default; AI_PROVIDER overrides the primary at runtime.
 //
-// Text priority: Groq -> Gemini -> CodeCraft -> OpenRouter.
+// Text priority: CodeCraft -> Groq -> Gemini -> OpenRouter.
 //
 // Image generation is unaffected by this order: the manager filters the chain
 // by capability, and Gemini is the only provider that declares supportsImages,
 // so character reference images are always served by Gemini.
 // ---------------------------------------------------------------------------
+aiProviders.register(new CodeCraftProvider());
 aiProviders.register(new GroqProvider());
 aiProviders.register(new GeminiProvider());
-aiProviders.register(new CodeCraftProvider());
 aiProviders.register(new OpenRouterProvider());
 
 /** Generate text with the selected provider, honouring its model fallback chain. */
