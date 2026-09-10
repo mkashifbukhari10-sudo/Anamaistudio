@@ -1,0 +1,8 @@
+{
+  "name": "AnamStudio",
+  "description": "AI-powered cinematic children's story and animation pre-production studio. Generates dynamic vegetable casts, 18-point Character Bibles, Character Reference Studio packages, 10-second scene planning, and Google Flow / Veo video prompts in Hindi, Urdu, and Roman Urdu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
