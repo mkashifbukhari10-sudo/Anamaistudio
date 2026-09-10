@@ -20,12 +20,17 @@ export const aiProviders = new AIProviderManager();
 //   import { MistralProvider } from "./mistral-provider.js";
 //   aiProviders.register(new MistralProvider());
 //
-// Registration order defines the fallback default; AI_PROVIDER selects one at
-// runtime. Gemini is registered first, so behaviour is unchanged when
-// AI_PROVIDER is unset.
+// Registration order defines the text-generation priority and the fallback
+// default; AI_PROVIDER overrides the primary at runtime.
+//
+// Text priority: Groq -> Gemini -> CodeCraft -> OpenRouter.
+//
+// Image generation is unaffected by this order: the manager filters the chain
+// by capability, and Gemini is the only provider that declares supportsImages,
+// so character reference images are always served by Gemini.
 // ---------------------------------------------------------------------------
-aiProviders.register(new GeminiProvider());
 aiProviders.register(new GroqProvider());
+aiProviders.register(new GeminiProvider());
 aiProviders.register(new CodeCraftProvider());
 aiProviders.register(new OpenRouterProvider());
 

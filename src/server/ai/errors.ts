@@ -18,7 +18,16 @@ export type AIErrorKind =
   | 'timeout'
   | 'unavailable'
   | 'provider_error'
+  /**
+   * Authorization, not authentication: the credential is accepted but this
+   * project, plan or scope may not serve the request (Gemini
+   * PERMISSION_DENIED, CodeCraft insufficient_scope, a disabled API).
+   * Nothing is wrong with the request, so another provider genuinely can
+   * serve it - this is recoverable.
+   */
+  | 'access_denied'
   | 'invalid_request'
+  /** Authentication: the credential itself is wrong or absent. Terminal. */
   | 'auth'
   | 'unknown';
 
@@ -29,6 +38,7 @@ const RECOVERABLE_KINDS: ReadonlySet<AIErrorKind> = new Set<AIErrorKind>([
   'timeout',
   'unavailable',
   'provider_error',
+  'access_denied',
 ]);
 
 export interface AIErrorClassification {
@@ -66,10 +76,31 @@ function readStatus(err: any): number | undefined {
   return undefined;
 }
 
-function kindFromStatus(status: number): AIErrorKind | null {
+/**
+ * A 403 can mean two very different things. Moderation and guardrail blocks
+ * are a property of the REQUEST, so they stay terminal - re-submitting
+ * flagged content to another provider is not a fix. Everything else at 403 is
+ * an entitlement denial against this account.
+ */
+function isModerationBlock(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes('moderation') ||
+    m.includes('flagged') ||
+    m.includes('guardrail') ||
+    m.includes('safety') ||
+    m.includes('content policy') ||
+    m.includes('content_filter')
+  );
+}
+
+function kindFromStatus(status: number, message: string): AIErrorKind | null {
   if (status === 429) return 'rate_limit';
   if (status === 408) return 'timeout';
-  if (status === 401 || status === 403) return 'auth';
+  // 401 is unauthenticated - the credential is wrong or absent. Terminal.
+  if (status === 401) return 'auth';
+  // 403 is unauthorized - the credential is fine, this account is not.
+  if (status === 403) return isModerationBlock(message) ? 'invalid_request' : 'access_denied';
   if (status === 402) return 'quota';            // balance exhausted (CodeCraft 402)
   if (status === 404) return 'provider_error';   // unknown/retired model
   if (status === 400 || status === 413 || status === 422) return 'invalid_request';
@@ -80,18 +111,39 @@ function kindFromStatus(status: number): AIErrorKind | null {
 function kindFromMessage(message: string): AIErrorKind {
   const m = message.toLowerCase();
 
-  // Terminal first: these must never trigger a failover.
+  // AUTHENTICATION - the credential itself is wrong or absent. Terminal:
+  // every provider would reject the same deployment mistake, and silently
+  // switching providers would hide a configuration error that needs fixing.
   if (
     m.includes('environment variable is missing') ||
     m.includes('api key not valid') ||
     m.includes('invalid api key') ||
     m.includes('invalid_api_key') ||
-    m.includes('unauthorized') ||
-    m.includes('permission_denied') ||
-    m.includes('insufficient_scope') ||
-    m.includes('permission denied')
+    m.includes('api key expired') ||
+    m.includes('invalid or revoked') ||
+    m.includes('authentication_error') ||
+    m.includes('unauthorized')
   ) {
     return 'auth';
+  }
+
+  // AUTHORIZATION / ENTITLEMENT - the key is accepted, but this project,
+  // plan or scope cannot serve the request. The request is fine, so another
+  // provider can serve it: recoverable. This is what stops a denied Gemini
+  // project from taking the whole failover chain down with it.
+  if (
+    m.includes('permission_denied') ||
+    m.includes('permission denied') ||
+    m.includes('denied access') ||
+    m.includes('access denied') ||
+    m.includes('insufficient_scope') ||
+    m.includes('has not been used in project') ||
+    m.includes('has not been enabled') ||
+    m.includes('is not enabled') ||
+    m.includes('consumer_suspended') ||
+    m.includes('suspended')
+  ) {
+    return 'access_denied';
   }
   if (
     m.includes('invalid_argument') ||
@@ -101,7 +153,10 @@ function kindFromMessage(message: string): AIErrorKind {
     m.includes('safety') ||
     m.includes('blocked') ||
     m.includes('content policy') ||
-    m.includes('content_filter')
+    m.includes('content_filter') ||
+    m.includes('moderation') ||
+    m.includes('flagged') ||
+    m.includes('guardrail')
   ) {
     return 'invalid_request';
   }
@@ -159,8 +214,16 @@ export function classifyError(err: any): AIErrorClassification {
     return { kind: tagged, recoverable: RECOVERABLE_KINDS.has(tagged), status, message };
   }
 
+  // A credential problem is unambiguous from its wording and is MORE specific
+  // than the status it happens to arrive with - Gemini reports an invalid key
+  // as 400 INVALID_ARGUMENT, which would otherwise read as a malformed request.
+  // Both are terminal, but the operator needs to see the real cause.
+  if (kindFromMessage(message) === 'auth') {
+    return { kind: 'auth', recoverable: false, status, message };
+  }
+
   if (status !== undefined) {
-    const kind = kindFromStatus(status);
+    const kind = kindFromStatus(status, message);
     if (kind) {
       return { kind, recoverable: RECOVERABLE_KINDS.has(kind), status, message };
     }
