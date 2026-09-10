@@ -5,11 +5,12 @@
  * The single question this file answers: "is it worth asking a DIFFERENT
  * provider the same question?"
  *
- *   recoverable  -> the request was fine, this backend could not serve it
- *                   (rate limit, quota, timeout, outage, bad/absent model)
- *   terminal     -> the request itself is the problem, or the deployment is
- *                   misconfigured; another provider would fail the same way
- *                   (malformed request, safety block, context overflow, auth)
+ *   recoverable  -> the request was fine, THIS backend could not serve it
+ *                   (rate limit, quota, timeout, outage, bad/absent model,
+ *                    denied project, rejected credential)
+ *   terminal     -> the REQUEST itself is the problem; another provider
+ *                   would fail on it identically, so trying one is waste
+ *                   (malformed request, safety block, context overflow)
  */
 
 export type AIErrorKind =
@@ -27,7 +28,12 @@ export type AIErrorKind =
    */
   | 'access_denied'
   | 'invalid_request'
-  /** Authentication: the credential itself is wrong or absent. Terminal. */
+  /**
+   * Authentication: this provider rejected the credential, or none was
+   * configured. Recoverable at the CHAIN level - the next provider has its
+   * own credential. The failure is still reported in the logs and in the
+   * aggregate error, so a misconfiguration stays visible.
+   */
   | 'auth'
   | 'unknown';
 
@@ -39,6 +45,10 @@ const RECOVERABLE_KINDS: ReadonlySet<AIErrorKind> = new Set<AIErrorKind>([
   'unavailable',
   'provider_error',
   'access_denied',
+  // A rejected or absent credential is a fact about ONE provider, not about
+  // the request - every other provider authenticates independently. Treating
+  // it as chain-fatal let a single bad key disable the whole failover chain.
+  'auth',
 ]);
 
 export interface AIErrorClassification {
@@ -97,7 +107,7 @@ function isModerationBlock(message: string): boolean {
 function kindFromStatus(status: number, message: string): AIErrorKind | null {
   if (status === 429) return 'rate_limit';
   if (status === 408) return 'timeout';
-  // 401 is unauthenticated - the credential is wrong or absent. Terminal.
+  // 401 is unauthenticated - this provider rejected the credential.
   if (status === 401) return 'auth';
   // 403 is unauthorized - the credential is fine, this account is not.
   if (status === 403) return isModerationBlock(message) ? 'invalid_request' : 'access_denied';
@@ -111,9 +121,9 @@ function kindFromStatus(status: number, message: string): AIErrorKind | null {
 function kindFromMessage(message: string): AIErrorKind {
   const m = message.toLowerCase();
 
-  // AUTHENTICATION - the credential itself is wrong or absent. Terminal:
-  // every provider would reject the same deployment mistake, and silently
-  // switching providers would hide a configuration error that needs fixing.
+  // AUTHENTICATION - this provider rejected the credential, or none was set.
+  // Scoped to the provider, not the request: the chain moves on to a backend
+  // with its own credential rather than failing the user's request outright.
   if (
     m.includes('environment variable is missing') ||
     m.includes('api key not valid') ||
@@ -217,9 +227,10 @@ export function classifyError(err: any): AIErrorClassification {
   // A credential problem is unambiguous from its wording and is MORE specific
   // than the status it happens to arrive with - Gemini reports an invalid key
   // as 400 INVALID_ARGUMENT, which would otherwise read as a malformed request.
-  // Both are terminal, but the operator needs to see the real cause.
+  // The distinction matters: a bad credential is scoped to one provider so the
+  // chain moves on, whereas a malformed request is terminal everywhere.
   if (kindFromMessage(message) === 'auth') {
-    return { kind: 'auth', recoverable: false, status, message };
+    return { kind: 'auth', recoverable: RECOVERABLE_KINDS.has('auth'), status, message };
   }
 
   if (status !== undefined) {
