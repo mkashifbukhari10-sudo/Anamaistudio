@@ -1,4 +1,4 @@
-import { createApp } from "../server";
+import { createApp } from "../server.js";
 
 /**
  * Vercel Function entry point.

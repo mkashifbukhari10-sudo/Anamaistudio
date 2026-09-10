@@ -1,12 +1,12 @@
-import { tagError } from "./errors";
-import { toJsonSchema } from "./schema";
+import { tagError } from "./errors.js";
+import { toJsonSchema } from "./schema.js";
 import type {
   AIImageRequest,
   AIImageResponse,
   AIProvider,
   AITextRequest,
   AITextResponse,
-} from "./types";
+} from "./types.js";
 
 /**
  * CodeCraft API adapter - text generation only.

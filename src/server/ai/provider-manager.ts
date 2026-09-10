@@ -2,7 +2,7 @@ import {
   AllProvidersFailedError,
   classifyError,
   type AIProviderAttempt,
-} from "./errors";
+} from "./errors.js";
 import type {
   AIImageRequest,
   AIImageResponse,
@@ -10,7 +10,7 @@ import type {
   AIProviderInfo,
   AITextRequest,
   AITextResponse,
-} from "./types";
+} from "./types.js";
 
 const DEFAULT_COOLDOWN_MS = 60000;
 

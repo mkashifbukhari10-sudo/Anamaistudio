@@ -1,4 +1,4 @@
-import type { AIResponseSchema } from "./types";
+import type { AIResponseSchema } from "./types.js";
 
 /**
  * Convert the app's Gemini-style response schemas into standard JSON Schema.

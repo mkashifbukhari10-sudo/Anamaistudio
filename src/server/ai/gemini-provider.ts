@@ -1,12 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
-import { tagError } from "./errors";
+import { tagError } from "./errors.js";
 import type {
   AIImageRequest,
   AIImageResponse,
   AIProvider,
   AITextRequest,
   AITextResponse,
-} from "./types";
+} from "./types.js";
 
 /**
  * Google Gemini adapter.

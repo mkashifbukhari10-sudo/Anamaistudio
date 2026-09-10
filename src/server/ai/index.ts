@@ -1,9 +1,9 @@
-import { AIProviderManager } from "./provider-manager";
-import { GeminiProvider } from "./gemini-provider";
-import { GroqProvider } from "./groq-provider";
-import { CodeCraftProvider } from "./codecraft-provider";
-import { OpenRouterProvider } from "./openrouter-provider";
-import type { AIImageRequest, AIImageResponse, AITextRequest, AITextResponse } from "./types";
+import { AIProviderManager } from "./provider-manager.js";
+import { GeminiProvider } from "./gemini-provider.js";
+import { GroqProvider } from "./groq-provider.js";
+import { CodeCraftProvider } from "./codecraft-provider.js";
+import { OpenRouterProvider } from "./openrouter-provider.js";
+import type { AIImageRequest, AIImageResponse, AITextRequest, AITextResponse } from "./types.js";
 
 /**
  * The application's single AI entry point.
@@ -17,7 +17,7 @@ export const aiProviders = new AIProviderManager();
 // ---------------------------------------------------------------------------
 // PROVIDER REGISTRY - the extension point.
 //
-//   import { MistralProvider } from "./mistral-provider";
+//   import { MistralProvider } from "./mistral-provider.js";
 //   aiProviders.register(new MistralProvider());
 //
 // Registration order defines the fallback default; AI_PROVIDER selects one at
@@ -39,11 +39,11 @@ export function generateImage(request: AIImageRequest): Promise<AIImageResponse>
   return aiProviders.generateImage(request);
 }
 
-export { AIProviderManager } from "./provider-manager";
-export { GeminiProvider } from "./gemini-provider";
-export { GroqProvider } from "./groq-provider";
-export { CodeCraftProvider } from "./codecraft-provider";
-export { OpenRouterProvider } from "./openrouter-provider";
+export { AIProviderManager } from "./provider-manager.js";
+export { GeminiProvider } from "./gemini-provider.js";
+export { GroqProvider } from "./groq-provider.js";
+export { CodeCraftProvider } from "./codecraft-provider.js";
+export { OpenRouterProvider } from "./openrouter-provider.js";
 export {
   AllProvidersFailedError,
   classifyError,
@@ -51,7 +51,7 @@ export {
   type AIErrorKind,
   type AIErrorClassification,
   type AIProviderAttempt,
-} from "./errors";
+} from "./errors.js";
 export type {
   AIProvider,
   AIProviderInfo,
@@ -61,4 +61,4 @@ export type {
   AITextOptions,
   AITextRequest,
   AITextResponse,
-} from "./types";
+} from "./types.js";

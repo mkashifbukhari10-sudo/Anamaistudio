@@ -1,6 +1,6 @@
 import path from "path";
 import express from "express";
-import { createApp } from "./server";
+import { createApp } from "./server.js";
 
 /**
  * Self-hosted production server (`npm start`).

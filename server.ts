@@ -5,8 +5,8 @@ import {
   calculateSceneCount as calculateTargetSceneCount,
   formatSceneTimeRange as formatTimeRange,
   formatTotalDuration,
-} from "./src/shared/duration";
-import { generateText, generateImage } from "./src/server/ai";
+} from "./src/shared/duration.js";
+import { generateText, generateImage } from "./src/server/ai/index.js";
 import {
   BLUEPRINT_SCHEMA,
   buildBlueprintPrompt,
@@ -18,7 +18,7 @@ import {
   sliceBlueprintForRange,
   targetBeatCount,
   targetCastSize,
-} from "./src/server/story/blueprint";
+} from "./src/server/story/blueprint.js";
 
 dotenv.config();
 

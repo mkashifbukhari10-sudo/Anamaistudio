@@ -1,4 +1,4 @@
-import { createApp } from "./server";
+import { createApp } from "./server.js";
 
 /**
  * Local development server - unchanged behaviour from before the Vercel split.
