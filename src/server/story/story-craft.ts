@@ -208,6 +208,9 @@ THE LESSON IS DRAMATISED, NEVER ANNOUNCED (ABSOLUTE):
 - This applies in EVERY language. Do not translate an explaining line into the target language and consider it solved; a summary is a summary in any language.
 - Silence is NOT required. Ordinary dialogue in the final scene is welcome when it is what these characters would actually say to each other in that moment - a question, a small practical remark, a name spoken. What is forbidden is dialogue that TELLS THE AUDIENCE WHAT TO THINK.
 - The character may realise something. They may not narrate the realisation.
+- BANNED SHAPE, not banned words: any line that WEIGHS the story's two values against each other, names what matters most, or asks which of them the character will choose. A line of the form "X or Y?" where X and Y are the story's competing values is the theme wearing a question mark - it is the same failure as stating the moral outright, and it is the most common way this rule gets broken.
+- A character CAN speak at the turning point. What they say must be about the immediate, concrete situation - a decision, an apology, a name, a practical remark - not about what the situation MEANS.
+- Test it this way: if the line would still make sense pasted into a different story with the same theme, it is a summary and must go. A line that only makes sense in THIS moment, about THESE objects and people, is real dialogue.
 
 ENDINGS:
 - Endings must be EARNED: traceable to a decision the character made, not delivered by rescue, coincidence or an authority figure arriving to fix it.
@@ -326,6 +329,7 @@ export function buildSceneCraftRules(ctx: CraftContext): string {
    - OBEY EACH CHARACTER'S OWN VOICE RULE as defined in the blueprint's cast plan. Apply it mechanically and consistently in every line they speak.
    - VOICE TEST: with the speaker names removed, a reader must still know who is speaking. If two lines could be swapped between characters, rewrite them.
    - DO NOT have characters narrate their own emotions or explain the story's meaning. Show it in action, expression and behaviour.
+   - THE LESSON IS NEVER SPOKEN, and neither is the choice between the story's values. A line that weighs one value against another ("my X or my Y?") announces the theme just as plainly as stating it. Characters speak about the concrete situation in front of them, never about what it means.
    - THE LESSON IS NEVER SPOKEN. Before writing any line, apply this test: could this line appear in a one-sentence summary of what the story means? If yes, delete it and replace it with something the character DOES. This holds in every language - translating an explaining line does not fix it.
    - Characters talk TO each other - asking, answering, reacting, deciding - never to the audience.${
      isFinalScene

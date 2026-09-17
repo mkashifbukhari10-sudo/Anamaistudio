@@ -10,7 +10,7 @@
  * Structured-output schema, handed to the provider untouched.
  *
  * The schemas the app builds today use OpenAPI-style uppercase type names
- * ("OBJECT", "STRING", "ARRAY", "INTEGER") because @google/genai's `Type` enum
+ * ("OBJECT", "STRING", "ARRAY", "INTEGER"). The vocabulary is defined in schema.ts
  * is a plain string enum. That means the schema literals are already portable
  * JSON: a future adapter can translate them (e.g. lowercase the `type` fields
  * for OpenAI-style JSON Schema) without touching a single call site.
@@ -25,6 +25,12 @@ export interface AITextOptions {
   /** e.g. "application/json" to request structured output. */
   responseMimeType?: string;
   responseSchema?: AIResponseSchema;
+  /**
+   * Optional per-request output ceiling. Omitted by every current call site,
+   * which takes the provider's default; available for a future call that
+   * genuinely needs more room.
+   */
+  maxOutputTokens?: number;
 }
 
 export interface AITextRequest {

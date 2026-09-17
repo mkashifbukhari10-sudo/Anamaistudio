@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Manual story test reports (development only)
+test-output/

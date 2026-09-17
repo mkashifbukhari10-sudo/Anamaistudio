@@ -4,7 +4,7 @@
  *
  * Imported by BOTH the Express server (server.ts) and the React client
  * (utils/validation.ts, components/DurationSelector.tsx). Keep it free of any
- * React, Node or Gemini imports so it stays portable across both bundles.
+ * React, Node or provider imports so it stays portable across both bundles.
  *
  * Every scene is a fixed 10-second shot, so scene count and runtime are two
  * views of the same number.

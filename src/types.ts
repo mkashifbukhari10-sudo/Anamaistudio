@@ -128,6 +128,29 @@ export interface SceneTransitionContract {
 }
 
 /**
+ * Words a model uses to mean "there is no dialogue here".
+ *
+ * A real generation emitted the literal string "None" as a spoken line, which
+ * would have reached the Flow export as dialogue. Matched only as a WHOLE
+ * value, never as a substring, so a real line that happens to contain the word
+ * is untouched.
+ */
+export const EMPTY_DIALOGUE_VALUES = [
+  'none',
+  'n/a',
+  'na',
+  'null',
+  'nil',
+  'no dialogue',
+  'none / visual action',
+  'visual action',
+  'no dialogue / visual action',
+  'silent',
+  '-',
+  '--',
+];
+
+/**
  * Where the camera is, and what it is doing, at a scene's final frame.
  *
  * Tracked so the next shot can be motivated by this one rather than chosen in
@@ -142,6 +165,20 @@ export interface CameraState {
   stillMovingAtCut?: boolean;
   /** Which way the action reads across frame, e.g. "left-to-right". */
   screenDirection: string;
+}
+
+/**
+ * What became of an object that stopped being held.
+ *
+ * Structural support for the most common continuity break observed in real
+ * generations: a prop in someone's hand in one scene, simply gone in the next.
+ * The model records the disposition as part of the scene's actual state, so
+ * nothing has to be invented afterwards to explain it.
+ */
+export interface PropDisposition {
+  prop: string;
+  disposition: string;
+  detail: string;
 }
 
 /** One character's complete physical and emotional state at a given frame. */
@@ -169,6 +206,8 @@ export interface ContinuityState {
   characterEmotions: Record<string, string>;
   heldProps: Record<string, string>;
   placedProps: string[];
+  /** What became of objects that stopped being held during this scene. */
+  propDispositions?: PropDisposition[];
   openClosedObjects?: string[];
   environmentState: string;
   storyGoals?: string;
@@ -235,6 +274,12 @@ export interface ScenePlannerItem {
   transitionContract?: SceneTransitionContract;
   continuityState?: ContinuityState;
   dialogueTurns?: DialogueTurn[];
+  /**
+   * The situation at this scene's FIRST frame. Populated only for CHAIN joins,
+   * where it is copied from the previous scene's end state - the opening of an
+   * unbroken take is not a new invention, it is the previous frame.
+   */
+  openingState?: ContinuityState;
   continuityIssues?: ContinuityIssue[];
 }
 
@@ -517,6 +562,13 @@ export interface WorldEntity {
    */
   speech?: 'speaking' | 'expressive' | 'mute';
   storyRelevance?: string;
+  /**
+   * Which scenes this entity is planned to appear in. Required for RECURRING:
+   * two real generations registered an animal as RECURRING that never appeared,
+   * so an entity with no plan is downgraded to BACKGROUND rather than becoming
+   * a promise the story never keeps.
+   */
+  plannedAppearances?: string;
 }
 
 /**
@@ -537,10 +589,21 @@ export interface WorldRegistry {
  * batch, which is what stops relationships drifting across a long timeline.
  * Scene generation reads it and never rewrites it.
  */
+/** A relationship turning point the blueprint plans to dramatise. */
+export interface PlannedSocialChange {
+  characterA: string;
+  characterB: string;
+  dimension: string;
+  atBeat: number;
+  intendedChange: string;
+}
+
 export interface SocialGraph {
   bonds: SocialBond[];
   households: Household[];
   characterSocial: CharacterSocial[];
+  /** Planned turning points. Scene generation emits the matching delta. */
+  plannedChanges: PlannedSocialChange[];
 }
 
 /**
@@ -595,6 +658,13 @@ export interface VeggieStory {
   worldRegistry?: WorldRegistry;
   /** Identity and social fact findings. Report only - nothing auto-fixed. */
   factReport?: FactReport;
+  /** Whether planned relationship turning points were actually dramatised. */
+  socialPlanReport?: {
+    planned: number;
+    fulfilled: number;
+    unfulfilled: number;
+    unplanned: number;
+  };
 }
 
 /** Continuity outcome for a generated story. Report only - nothing auto-fixed. */

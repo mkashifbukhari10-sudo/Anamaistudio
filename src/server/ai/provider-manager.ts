@@ -20,7 +20,7 @@ const DEFAULT_COOLDOWN_MS = 60000;
  * Selection order for a call:
  *   1. request.provider  - pins one provider, failover disabled
  *   2. AI_PROVIDER        - names the primary
- *   3. registration order - Gemini is registered first
+ *   3. registration order - DeepSeek is registered first
  *
  * Failover rules:
  *   - Each provider is attempted AT MOST ONCE per request. The chain is the

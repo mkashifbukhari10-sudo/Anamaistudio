@@ -3,7 +3,9 @@ import type {
   CharacterSnapshot,
   ContinuityIssue,
   ContinuityState,
+  PropDisposition,
 } from "../../types.js";
+import { EMPTY_DIALOGUE_VALUES } from "../../types.js";
 
 /**
  * THE CONTINUITY DIRECTOR
@@ -31,6 +33,48 @@ import type {
 // ---------------------------------------------------------------------------
 // 1. NORMALISATION
 // ---------------------------------------------------------------------------
+
+/**
+ * True when a value means "no dialogue" rather than being a line of dialogue.
+ *
+ * Compared as a WHOLE trimmed value, never as a substring, so a real line such
+ * as "None of us knew" is left alone. A real generation emitted the bare string
+ * "None" as a spoken line, which would have shipped to Flow as dialogue.
+ */
+export function isEmptyDialogue(value: unknown): boolean {
+  const text = String(value ?? "").trim();
+  if (!text) return true;
+  const bare = text.replace(/^["'\s.]+|["'\s.]+$/g, "").toLowerCase();
+  return EMPTY_DIALOGUE_VALUES.includes(bare);
+}
+
+/**
+ * Strip placeholder dialogue from a scene, in place.
+ *
+ * Removes placeholder turns and blanks a placeholder 'dialogue' string, so a
+ * silent scene is genuinely silent everywhere downstream - including the Flow
+ * export.
+ */
+export function normalizeSceneDialogue(scene: any): boolean {
+  let changed = false;
+
+  if (Array.isArray(scene?.dialogueTurns)) {
+    const kept = scene.dialogueTurns.filter((t: any) => !isEmptyDialogue(t?.line));
+    if (kept.length !== scene.dialogueTurns.length) {
+      scene.dialogueTurns = kept;
+      changed = true;
+    }
+  }
+
+  if (scene?.dialogue !== undefined && isEmptyDialogue(scene.dialogue)) {
+    if (scene.dialogue !== "") {
+      scene.dialogue = "";
+      changed = true;
+    }
+  }
+
+  return changed;
+}
 
 /** Trim, and treat the model's various ways of saying "nothing" as empty. */
 function clean(value: unknown): string {
@@ -107,6 +151,15 @@ export function normalizeContinuityState(raw: any): ContinuityState | undefined 
     characterEmotions,
     heldProps,
     placedProps: cleanList(raw.placedProps),
+    propDispositions: Array.isArray(raw.propDispositions)
+      ? raw.propDispositions
+          .map((d: any) => ({
+            prop: clean(d?.prop),
+            disposition: clean(d?.disposition),
+            detail: clean(d?.detail),
+          }))
+          .filter((d: PropDisposition) => Boolean(d.prop))
+      : [],
     openClosedObjects: cleanList(raw.openClosedObjects),
     environmentState: clean(raw.environmentState),
     characters,
@@ -315,9 +368,20 @@ export function reconcileHandoffs(scenes: any[]): HandoffReconciliation[] {
       });
     }
 
-    // Carry forward anything the scene did not restate. Silence is not a change.
     const prevState: ContinuityState | undefined = prev.continuityState;
     const currState: ContinuityState | undefined = curr.continuityState;
+
+    // The opening frame of an unbroken take IS the previous frame. Copy the
+    // previous END state in as this scene's authoritative OPENING state.
+    //
+    // Its END state is deliberately left alone: the scene still has ten seconds
+    // in which people may move, feel differently, and put things down. What is
+    // fixed is where it STARTS.
+    if (prevState) {
+      curr.openingState = JSON.parse(JSON.stringify(prevState));
+    }
+
+    // Carry forward anything the scene did not restate. Silence is not a change.
     if (prevState && currState) {
       if (!currState.location && prevState.location) currState.location = prevState.location;
       if (!currState.timeOfDay && prevState.timeOfDay) currState.timeOfDay = prevState.timeOfDay;
@@ -342,6 +406,37 @@ export function reconcileHandoffs(scenes: any[]): HandoffReconciliation[] {
 // to any prop, any location and any cast without a keyword list. Nothing here
 // regenerates anything: issues are attached for human review.
 // ---------------------------------------------------------------------------
+
+/**
+ * Shot sizes from widest to tightest.
+ *
+ * Used to tell a REFRAME from an EXIT. `charactersPresent` records who is in
+ * FRAME, not who is in the scene, so a push-in from medium to close-up drops
+ * people who never moved. Real generations produced seven "character leaves
+ * without an exit" findings this way, every one of them a tightening camera in
+ * the same place at the same time.
+ */
+const SHOT_SIZES = ["extreme wide", "wide", "full", "medium wide", "medium", "medium close", "close", "extreme close"];
+
+function shotRank(shotSize: string): number {
+  const lowered = String(shotSize || "").toLowerCase();
+  let best = -1;
+  SHOT_SIZES.forEach((label, index) => {
+    if (lowered.includes(label)) best = Math.max(best, index);
+  });
+  return best;
+}
+
+/**
+ * True when the camera tightened, which explains characters leaving frame
+ * without leaving the scene.
+ */
+function framingTightened(prevState?: ContinuityState, currState?: ContinuityState): boolean {
+  const before = shotRank(prevState?.cameraState?.shotSize || "");
+  const after = shotRank(currState?.cameraState?.shotSize || "");
+  if (before < 0 || after < 0) return false;
+  return after > before;
+}
 
 /** Rough ordering of a day, used only to spot time running backwards. */
 const TIME_ORDER = [
@@ -402,8 +497,17 @@ export function validateContinuity(scenes: any[]): void {
       `${prev.characterActions || ""} ${prev.endState || ""} ${curr.characterActions || ""}`
     );
 
+    // A tighter shot, or a cut to a new moment, legitimately excludes people
+    // who are still there. Only a reframe that does NOT explain the absence is
+    // worth reporting.
+    const reframed = framingTightened(prevState, currState);
+    const newMoment =
+      !isChain &&
+      ((prevState?.placeId && currState?.placeId && prevState.placeId !== currState.placeId) ||
+        (prevState?.timeOfDay && currState?.timeOfDay && prevState.timeOfDay !== currState.timeOfDay));
+
     prevChars.forEach((name) => {
-      if (!currChars.has(name) && prevChars.size > 1 && !exitDeclared) {
+      if (!currChars.has(name) && prevChars.size > 1 && !exitDeclared && !reframed && !newMoment) {
         issues.push(
           issue(
             curr.sceneNumber,
@@ -424,14 +528,24 @@ export function validateContinuity(scenes: any[]): void {
         const stillHeld = (currState.heldProps || {})[who];
         if (stillHeld && stillHeld.toLowerCase() === held.toLowerCase()) continue;
 
-        const wasSetDown = (currState.placedProps || []).some((p) =>
-          p.toLowerCase().includes(held.toLowerCase().split(",")[0].trim())
-        );
+        // The holder is no longer in frame, so the object went with them. That
+        // is a reframe, not a vanishing prop - and it accounted for both
+        // remaining prop findings in a real generation.
+        if (!currChars.has(String(who).toLowerCase())) continue;
+
+        const propName = held.toLowerCase().split(",")[0].trim();
+        const wasSetDown = (currState.placedProps || []).some((p) => p.toLowerCase().includes(propName));
         const actionExplains = /\b(puts? down|places?|drops?|hands?|gives?|throws?|sets? down)\b/i.test(
           `${prev.characterActions || ""} ${curr.characterActions || ""} ${prev.endState || ""}`
         );
+        // The scene may state outright what became of it. That is the structural
+        // answer to a vanishing prop, and it satisfies this check honestly.
+        const dispositionRecorded = [
+          ...(currState.propDispositions ?? []),
+          ...(prevState.propDispositions ?? []),
+        ].some((d) => d.prop.toLowerCase().includes(propName) || propName.includes(d.prop.toLowerCase()));
 
-        if (!wasSetDown && !actionExplains) {
+        if (!wasSetDown && !actionExplains && !dispositionRecorded) {
           issues.push(
             issue(
               curr.sceneNumber,
@@ -446,39 +560,35 @@ export function validateContinuity(scenes: any[]): void {
         }
       }
 
-      // --- Position / emotion across an unbroken join -----------------------
+      // --- The unbroken join itself -----------------------------------------
+      //
+      // Position and emotion are deliberately NOT compared end-to-end here.
+      // `continuityState` is a scene's FINAL frame, so comparing the previous
+      // final frame with this one asks the scene to end exactly where it began
+      // - which forbids the ten seconds of action it exists to contain. The
+      // join is governed by `openingState`, which reconciliation sets from the
+      // previous end state, so the seam is correct by construction.
+      //
+      // What a CHAIN genuinely cannot do is change PLACE or LIGHT mid-take, and
+      // those are still checked below.
       if (isChain) {
-        for (const [who, where] of Object.entries(prevState.characterPositions || {})) {
-          const nowAt = (currState.characterPositions || {})[who];
-          if (nowAt && nowAt.toLowerCase() !== where.toLowerCase()) {
-            issues.push(
-              issue(
-                curr.sceneNumber,
-                "character",
-                `Position jumps across an unbroken join (${who})`,
-                `Scene ${prev.sceneNumber} ends: ${who} at ${where}.`,
-                `Scene ${curr.sceneNumber} opens: ${who} at ${nowAt}.`,
-                `On a CHAIN join the opening must match the previous ending, or the join should be a CUT.`,
-                "warning"
-              )
-            );
-          }
-        }
-
-        for (const [who, mood] of Object.entries(prevState.characterEmotions || {})) {
-          const nowFeeling = (currState.characterEmotions || {})[who];
-          if (nowFeeling && nowFeeling.toLowerCase() !== mood.toLowerCase()) {
-            issues.push(
-              issue(
-                curr.sceneNumber,
-                "emotion",
-                `Emotion resets across an unbroken join (${who})`,
-                `Scene ${prev.sceneNumber} ends: ${mood}.`,
-                `Scene ${curr.sceneNumber} opens: ${nowFeeling}.`,
-                `Feeling carries through an unbroken join. Let it shift during the scene, not at the seam.`,
-                "info"
-              )
-            );
+        const opening: ContinuityState | undefined = curr.openingState;
+        if (opening) {
+          for (const [who, where] of Object.entries(prevState.characterPositions || {})) {
+            const openedAt = (opening.characterPositions || {})[who];
+            if (openedAt && openedAt.toLowerCase() !== where.toLowerCase()) {
+              issues.push(
+                issue(
+                  curr.sceneNumber,
+                  "character",
+                  `Unbroken join does not open where the last one ended (${who})`,
+                  `Scene ${prev.sceneNumber} ends: ${who} at ${where}.`,
+                  `Scene ${curr.sceneNumber} opens: ${who} at ${openedAt}.`,
+                  `On a CHAIN the opening frame must be the previous frame, or the join should be a CUT.`,
+                  "warning"
+                )
+              );
+            }
           }
         }
 
@@ -638,8 +748,53 @@ export function validateContinuity(scenes: any[]): void {
       }
     }
 
-    curr.continuityIssues = issues;
+    // Two characters holding the same object produced the same finding twice
+    // in a real generation. One break, one report.
+    const seen = new Set<string>();
+    curr.continuityIssues = issues.filter((item) => {
+      const id = `${item.dimension}::${item.title}`;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
   }
+}
+
+/**
+ * An unbroken join cannot change place.
+ *
+ * A real generation marked a courtyard-to-kitchen move as CHAIN, which is a
+ * physical impossibility in a single take. Where consecutive scenes resolve to
+ * different registered places the join is demoted to CUT - the conservative
+ * choice, since a wrongly-CUT join merely loses a seamless transition while a
+ * wrongly-CHAINed one asks for an impossible shot.
+ *
+ * Same place does NOT imply CHAIN: that judgement stays with the director.
+ */
+export function enforceChainPlausibility(scenes: any[]): Array<{ sceneNumber: number; reason: string }> {
+  const demoted: Array<{ sceneNumber: number; reason: string }> = [];
+  if (!Array.isArray(scenes) || scenes.length < 2) return demoted;
+
+  const ordered = [...scenes].sort((a, b) => (a?.sceneNumber || 0) - (b?.sceneNumber || 0));
+
+  for (let i = 1; i < ordered.length; i++) {
+    const prev = ordered[i - 1];
+    const curr = ordered[i];
+    if (String(curr.transitionType || "").toUpperCase() !== "CHAIN") continue;
+
+    const prevPlace = prev?.continuityState?.placeId;
+    const currPlace = curr?.continuityState?.placeId;
+    if (!prevPlace || !currPlace || prevPlace === currPlace) continue;
+
+    curr.transitionType = "CUT";
+    if (curr.transitionContract) curr.transitionContract.transitionType = "CUT";
+    demoted.push({
+      sceneNumber: curr.sceneNumber,
+      reason: `CHAIN across different places (${prevPlace} -> ${currPlace}) is not a single take; demoted to CUT`,
+    });
+  }
+
+  return demoted;
 }
 
 /** Counts for the generation log and the UI summary. */

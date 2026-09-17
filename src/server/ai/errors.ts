@@ -21,7 +21,7 @@ export type AIErrorKind =
   | 'provider_error'
   /**
    * Authorization, not authentication: the credential is accepted but this
-   * project, plan or scope may not serve the request (Gemini
+   * project, plan or scope may not serve the request (a provider
    * PERMISSION_DENIED, CodeCraft insufficient_scope, a disabled API).
    * Nothing is wrong with the request, so another provider genuinely can
    * serve it - this is recoverable.
@@ -139,7 +139,7 @@ function kindFromMessage(message: string): AIErrorKind {
 
   // AUTHORIZATION / ENTITLEMENT - the key is accepted, but this project,
   // plan or scope cannot serve the request. The request is fine, so another
-  // provider can serve it: recoverable. This is what stops a denied Gemini
+  // provider can serve it: recoverable. This is what stops one denied
   // project from taking the whole failover chain down with it.
   if (
     m.includes('permission_denied') ||
@@ -225,7 +225,7 @@ export function classifyError(err: any): AIErrorClassification {
   }
 
   // A credential problem is unambiguous from its wording and is MORE specific
-  // than the status it happens to arrive with - Gemini reports an invalid key
+  // than the status it happens to arrive with - some providers report an invalid key
   // as 400 INVALID_ARGUMENT, which would otherwise read as a malformed request.
   // The distinction matters: a bad credential is scoped to one provider so the
   // chain moves on, whereas a malformed request is terminal everywhere.

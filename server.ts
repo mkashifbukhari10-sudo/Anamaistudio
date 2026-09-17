@@ -1,5 +1,5 @@
 import express from "express";
-import { Type } from "@google/genai";
+import { Type } from "./src/server/ai/schema.js";
 import dotenv from "dotenv";
 import {
   calculateSceneCount as calculateTargetSceneCount,
@@ -7,26 +7,33 @@ import {
   formatTotalDuration,
   SECONDS_PER_SCENE,
 } from "./src/shared/duration.js";
-import { generateText, generateImage } from "./src/server/ai/index.js";
+import { generateText, generateImage, MAX_SCENES_PER_BATCH } from "./src/server/ai/index.js";
 import { registerAuthRoutes, requireAuth } from "./src/server/auth/index.js";
 import { buildSceneCraftRules } from "./src/server/story/story-craft.js";
 import {
   buildSocialContextForBible,
   buildSocialGraph,
   isEmptyGraph,
+  normalizeSocialDeltas,
+  reconcilePlannedChanges,
   summariseSocialGraph,
 } from "./src/server/story/social-graph.js";
 import {
   buildWorldRegistry,
-  resolvePlaceId,
+  completeEntityFacts,
+  resolveScenePlace,
   summariseWorldRegistry,
 } from "./src/server/story/world-registry.js";
 import { validateStoryFacts } from "./src/server/story/fact-validator.js";
+import { startCapture, endCapture, setCallContext } from "./src/server/ai/telemetry.js";
+import { saveStoryReport } from "./src/server/dev/story-report.js";
 import type { WorldRegistry } from "./src/types.js";
 import {
   buildLedger,
   buildLedgerBlock,
+  enforceChainPlausibility,
   normalizeContinuityState,
+  normalizeSceneDialogue,
   reconcileHandoffs,
   summariseContinuity,
   validateContinuity,
@@ -75,7 +82,17 @@ function resolveDramaticRole(role: unknown, narrativePurpose?: unknown): string 
 }
 
 // Partition any target scene count into balanced batches of max 12 scenes
-function partitionSceneRanges(totalScenes: number, maxChunkSize: number = 12): Array<{ start: number; end: number }> {
+/**
+ * Scenes per batch, sized to the active provider's output ceiling.
+ *
+ * The value lives in the provider module, next to the model limits it depends
+ * on. deepseek-flash allows up to 384K output tokens, so the ceiling is not the
+ * constraint: a real 60-scene story averaged ~1,100 output tokens per scene, so
+ * even the whole film would fit in one call. 12 is a RELIABILITY choice - it is
+ * what the long-form architecture was validated with, and it keeps a failed
+ * batch costing one twelfth of the film rather than all of it.
+ */
+function partitionSceneRanges(totalScenes: number, maxChunkSize: number = MAX_SCENES_PER_BATCH): Array<{ start: number; end: number }> {
   if (totalScenes <= maxChunkSize) {
     return [{ start: 1, end: totalScenes }];
   }
@@ -218,6 +235,26 @@ const SCENE_PROPERTIES = {
         description: "Objects resting in the world at the final frame (not held), with where they are.",
         items: { type: Type.STRING },
       },
+      propDispositions: {
+        type: Type.ARRAY,
+        description:
+          "REQUIRED whenever a character who was holding something at the START of this scene is NOT holding it at the end. Say what became of it. Leave empty when nothing changed hands. This is how a tracked object stops being held without simply vanishing.",
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            prop: { type: Type.STRING, description: "The object" },
+            disposition: {
+              type: Type.STRING,
+              description: "One of: placed, transferred, stored, dropped, left, carried-off",
+            },
+            detail: {
+              type: Type.STRING,
+              description: "Where it went or who has it now, e.g. 'on the wooden table' or 'handed to the mother'",
+            },
+          },
+          required: ["prop", "disposition", "detail"],
+        },
+      },
       openClosedObjects: {
         type: Type.ARRAY,
         description: "State of anything that opens or closes, each as 'name: state', e.g. 'gate: open'.",
@@ -226,7 +263,7 @@ const SCENE_PROPERTIES = {
       placeId: {
         type: Type.STRING,
         description:
-          "The registered place id from the World Registry where this scene happens, e.g. 'courtyard'. Use the SAME id every time the story returns to that place, and keep its fixed features true. Leave empty only for a location the registry does not contain.",
+          "The registered PLACE id from the World Registry where this scene happens. It ALWAYS starts 'place_' (e.g. 'place_courtyard'). NEVER put a household id here - a household is a group of people, not a location. Use the SAME id every time the story returns to that place, and keep its fixed features true. Leave empty only for a location the registry genuinely does not contain.",
       },
       location: { type: Type.STRING, description: "Exact location at the final frame" },
       timeOfDay: { type: Type.STRING, description: "Time of day at the final frame. Must move forward across the film." },
@@ -251,7 +288,7 @@ const SCENE_PROPERTIES = {
   socialChanges: {
     type: Type.ARRAY,
     description:
-      "ONLY when a relationship's STATE genuinely changed in this scene: trust gained or lost, tension raised or eased, a promise made, kept or broken, a disagreement opened or settled, a responsibility handed over, something learned about each other. MOST SCENES CHANGE NOTHING - leave this empty rather than inventing a change. NEVER use this to alter WHO people are to each other: relationship facts are fixed and cannot be changed by a scene.",
+      "Records a genuine shift in how two characters stand with each other: trust gained or lost, tension raised or eased, understanding reached, a promise made/kept/broken, a disagreement opened or settled, a responsibility taken on or handed over, something important learned about each other. MANY scenes change nothing and should leave this empty - never invent a shift to fill the field. BUT a scene that is a genuine TURNING POINT in a relationship must record it: if a character gives in, forgives, refuses, realises something about someone, or takes on another's burden, that is a real change and leaving it unrecorded loses it for the rest of the film. NEVER use this to alter WHO people are to each other - relationship facts are fixed and a scene cannot change them.",
     items: {
       type: Type.OBJECT,
       properties: {
@@ -268,7 +305,8 @@ const SCENE_PROPERTIES = {
   },
   transitionType: {
     type: Type.STRING,
-    description: "CHAIN if the action flows unbroken from the previous scene (same location, same continuous motion, no time jump) and the join must be invisible; CUT if this scene changes location, angle or time. Most scenes are CUT. Scene 1 is always CUT.",
+    description:
+      "How this scene joins the previous one. CHAIN when the action genuinely continues across the boundary - same place, same unbroken motion, no time gap - so the two clips must look like one continuous take. CUT when the scene changes place, angle, or moment. Judge each join on what the action actually does: an action that carries on past the ten-second boundary is a CHAIN, and a story where a single continuous moment spans two scenes should say so. When the join is genuinely ambiguous, choose CUT. Scene 1 is always CUT.",
   },
   finalVideoPrompt: {
     type: Type.STRING,
@@ -394,6 +432,8 @@ MANDATORY CONTINUITY & SHOT-TO-SHOT LAWS:
    - If a character begins walking to the right, they DO NOT suddenly appear on the left in the next shot unless an explicit camera reverse shot is motivated.
 3. PHYSICAL & PROP CONTINUITY:
    - If a character picks up or holds a prop (e.g. basket, umbrella, watering can, lantern, map), they CONTINUE HOLDING IT in subsequent scenes until an explicit action sets it down.
+   - WHEN A HELD OBJECT STOPS BEING HELD, SAY WHERE IT WENT. Put it down, hand it over, store it, drop it, or leave it somewhere - and record it in 'placedProps' or in another character's 'holding'. An object that is in someone's hand in one scene and simply gone in the next is the most common continuity break there is.
+   - On a CUT this need not be shown on screen: if the new situation makes it obvious the object was set down or put away, the end state simply reflects that. Do NOT invent stilted prop-management dialogue or actions purely to satisfy this rule - just make sure the object's whereabouts are consistent.
    - If a gate or door is opened, it STAYS OPEN in subsequent scenes until closed.
 4. EMOTIONAL CONTINUITY:
    - Emotions (fear, curiosity, relief, laughter, tears) persist across shots. They never reset to a generic neutral smile without a clear narrative trigger.
@@ -408,7 +448,7 @@ ${buildSceneCraftRules({ storyMode, targetSceneCount: totalScenes, duration, lan
    - Then describe ONE continuous ${SECONDS_PER_SCENE}-second action, motivated camera movement, lighting direction and colour temperature, synchronized dialogue in ${language}, Foley sound effects, and the exact CLOSING frame.
    - Restate the full locked visual description of EVERY character present, word-for-word from the Character Bible, in EVERY prompt. This repetition is required, not redundant - it is the only thing holding character identity stable across independent generations.
    - Write ONLY positive description. NEVER use "avoid", "no", "without", "not", or any other negation - negative constraints are delivered separately in a dedicated field and negation in a positive prompt tends to summon what it names.
-   - Set 'transitionType' to "CHAIN" only when the action flows unbroken from the previous scene (same location, same continuous motion, no time jump) and the join must be invisible. Set "CUT" when the scene changes location, camera angle or time. Most scenes are CUT; Scene 1 is always CUT.`
+   - Set 'transitionType' by judging what the ACTION does at the boundary. CHAIN when a single continuous movement or moment carries on past the ten-second mark in the same place with no time gap - the two clips must read as one unbroken take. CUT when the scene changes place, angle or moment. Do not treat CHAIN as exceptional: whenever an action genuinely spans the boundary, mark it CHAIN so the join can be made seamless. When it is truly ambiguous, choose CUT. Scene 1 is always CUT.`
     + buildStoryIntelligenceDirectives({
       startScene,
       endScene,
@@ -580,6 +620,7 @@ async function runSceneBatchPipeline(params: {
 
   const attemptRange = async (start: number, end: number, depth: number): Promise<void> => {
     try {
+      setCallContext(`scenes ${start}-${end}${depth > 0 ? ` (split depth ${depth})` : ""}`);
       const batchScenes = await generateScenesBatch({
         startScene: start,
         endScene: end,
@@ -627,7 +668,7 @@ async function runSceneBatchPipeline(params: {
     }
   };
 
-  const sceneBatches = partitionSceneRanges(targetSceneCount, 12);
+  const sceneBatches = partitionSceneRanges(targetSceneCount, MAX_SCENES_PER_BATCH);
   console.log(`[${logLabel}] Executing ${sceneBatches.length} batch(es) sequentially:`, sceneBatches);
 
   for (let bIdx = 0; bIdx < sceneBatches.length; bIdx++) {
@@ -783,13 +824,27 @@ function validateAndStandardizeTimeline(
         }
       }
 
+      // A placeholder like "None" is the absence of dialogue, not a line.
+      normalizeSceneDialogue(scene);
+
       // Fold the model's array-shaped snapshot into the typed ContinuityState.
       scene.continuityState = normalizeContinuityState(scene.continuityState);
 
       // Link the scene to a registered place. When the model named the place
       // rather than its id, resolve it by name so the identity link survives.
-      if (scene.continuityState && worldRegistry && !scene.continuityState.placeId) {
-        scene.continuityState.placeId = resolvePlaceId(worldRegistry, scene.continuityState.location);
+      // A supplied placeId is a claim, not truth: verify it against the
+      // registry and correct it when it names something that is not a place.
+      if (scene.continuityState && worldRegistry) {
+        const resolved = resolveScenePlace(
+          worldRegistry,
+          scene.continuityState.placeId,
+          scene.continuityState.location
+        );
+        scene.continuityState.placeId = resolved.placeId;
+        if (resolved.location) scene.continuityState.location = resolved.location;
+        if (resolved.corrected && resolved.reason) {
+          console.log(`[World] Scene ${num}: ${resolved.reason}.`);
+        }
       }
 
       // Strip any cross-scene reference the model emitted anyway. Flow renders
@@ -827,6 +882,13 @@ function validateAndStandardizeTimeline(
 
   // Sort strictly by sceneNumber
   validScenes.sort((a, b) => a.sceneNumber - b.sceneNumber);
+
+  // A CHAIN that crosses places is physically impossible. Demote before
+  // reconciling, so no impossible join gets stitched together.
+  const demoted = enforceChainPlausibility(validScenes);
+  if (demoted.length > 0) {
+    console.log(`[Continuity] Demoted ${demoted.length} implausible CHAIN join(s): ${demoted.map((d) => `S${d.sceneNumber}`).join(", ")}.`);
+  }
 
   // Make unbroken joins continuous, then report what is left. Reconciliation
   // is silent and safe; nothing is regenerated automatically.
@@ -902,6 +964,13 @@ export function createApp(options: CreateAppOptions = {}) {
 
   // Story Generation API Endpoint with Cinematic Long-Form Story Engine
   app.post("/api/generate-story", async (req, res) => {
+    // Development-only instrumentation. Off in production, and every call is
+    // failure-tolerant, so none of this can affect the story itself.
+    const generationId = `gen_${Date.now().toString(36)}`;
+    const generationStartedAt = Date.now();
+    let narrativeBlueprintForReport: any = null;
+    startCapture();
+
     try {
       const {
         language,
@@ -983,6 +1052,7 @@ export function createApp(options: CreateAppOptions = {}) {
             : undefined,
       };
 
+      setCallContext("blueprint");
       const blueprintResponse = await generateText({
         prompt: buildBlueprintPrompt(blueprintContext),
         options: {
@@ -1018,7 +1088,16 @@ export function createApp(options: CreateAppOptions = {}) {
 
       // Places and world entities, normalised once. Dangling references are
       // dropped here so no batch is handed an id it cannot resolve.
+      // Kept for the failure report: if scene generation dies later, the
+      // report still shows what the blueprint actually planned.
+      narrativeBlueprintForReport = narrativeBlueprint;
+
       const worldRegistry = buildWorldRegistry(narrativeBlueprint.worldRegistry);
+      // Fill in ownership and home facts the story implies but did not state.
+      const entityFixes = completeEntityFacts(worldRegistry, socialGraph.households.map((h) => h.id));
+      if (entityFixes.length > 0) {
+        console.log(`[World] Completed ${entityFixes.length} entity fact(s): ${entityFixes.join("; ")}`);
+      }
       narrativeBlueprint.worldRegistry = worldRegistry;
 
       console.log(
@@ -1108,6 +1187,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         )}\n`;
       }
 
+      setCallContext("screenplay + character bible");
       const phase1Response = await generateText({
         prompt: phase1Prompt,
         options: {
@@ -1244,7 +1324,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
 
       const phase1RawJson = phase1Response.text;
       if (!phase1RawJson) {
-        throw new Error("No response received from Gemini for story generation.");
+        throw new Error("No response received from the AI provider for story generation.");
       }
 
       const storyData = JSON.parse(phase1RawJson);
@@ -1365,10 +1445,30 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         socialGraph,
         worldRegistry,
         castNames: (storyData.characters || []).map((c: any) => c?.name).filter(Boolean),
+        theme: narrativeBlueprint?.theme,
+        moral: storyData.moral,
       });
       console.log(
         `[Facts] ${storyData.factReport.warnings} warning(s) and ${storyData.factReport.infos} note(s) ` +
           `on identity and social facts.`
+      );
+
+      // Did the planned relationship turning points actually get dramatised?
+      // Reported, never enforced - a duplicate delta added to satisfy a plan
+      // would be worse than an unfulfilled plan.
+      const planStatus = reconcilePlannedChanges(
+        socialGraph,
+        normalizeSocialDeltas(storyData.scenes)
+      );
+      storyData.socialPlanReport = {
+        planned: (socialGraph.plannedChanges || []).length,
+        fulfilled: planStatus.fulfilled.length,
+        unfulfilled: planStatus.unfulfilled.length,
+        unplanned: planStatus.unplanned.length,
+      };
+      console.log(
+        `[Social] Turning points: ${planStatus.fulfilled.length}/${(socialGraph.plannedChanges || []).length} planned fulfilled, ` +
+          `${planStatus.unplanned.length} unplanned delta(s).`
       );
 
       storyData.estimatedScenesCount = storyData.scenes.length;
@@ -1403,9 +1503,38 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         buildCharacterReferencePackage(char, storyData.animationStyle || selectedStyle)
       );
 
+      const reportPath = saveStoryReport({
+        generationId,
+        request: req.body,
+        provider: "deepseek",
+        model: "deepseek-flash",
+        status: storyData.sceneGeneration?.isComplete === false ? "partial" : "complete",
+        elapsedMs: Date.now() - generationStartedAt,
+        story: storyData,
+        blueprint: narrativeBlueprint,
+        telemetry: endCapture(),
+      });
+      if (reportPath) console.log(`[Report] Test report saved: ${reportPath}`);
+
       return res.json({ success: true, data: storyData });
     } catch (error: any) {
       console.error("Error generating veggie story:", error);
+
+      // A failed run is the most useful thing to capture: the report keeps
+      // whatever was produced before the failure plus the exact error.
+      const reportPath = saveStoryReport({
+        generationId,
+        request: req.body,
+        provider: "deepseek",
+        model: "deepseek-flash",
+        status: "failed",
+        elapsedMs: Date.now() - generationStartedAt,
+        blueprint: narrativeBlueprintForReport,
+        telemetry: endCapture(),
+        failure: { message: error?.message || String(error), stack: error?.stack },
+      });
+      if (reportPath) console.log(`[Report] Failure report saved: ${reportPath}`);
+
       return res.status(500).json({
         error: error.message || "Failed to generate story. Please check the server logs.",
       });
@@ -1596,7 +1725,7 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null, (characters || []).map((c: a
 
       const rawJson = response.text;
       if (!rawJson) {
-        throw new Error("No response received from Gemini.");
+        throw new Error("No response received from the AI provider.");
       }
 
       const parsed = JSON.parse(rawJson);
@@ -1830,7 +1959,7 @@ CRITICAL:
 
       const rawJson = response.text;
       if (!rawJson) {
-        throw new Error("No response received from Gemini.");
+        throw new Error("No response received from the AI provider.");
       }
 
       const parsed = JSON.parse(rawJson);
@@ -1920,6 +2049,19 @@ CRITICAL:
         error: "Image generation model did not return image data. The prompt is ready to copy.",
       });
     } catch (error: any) {
+      // The active provider may not offer image generation at all. That is a
+      // capability gap, not a transient failure, so it is reported as 501 -
+      // telling the UI not to retry - while the reference prompt the studio
+      // already produced remains available to copy.
+      const unsupported = /does not provide an image-generation API/i.test(error?.message || "");
+      if (unsupported) {
+        console.warn("[Generate Character Image] Provider has no image endpoint; prompt-only mode.");
+        return res.status(501).json({
+          error: error.message,
+          promptOnly: true,
+        });
+      }
+
       console.warn("Character image generation error:", error);
       return res.status(503).json({
         error: error.message || "Image model currently busy. Reference prompt is ready to copy.",

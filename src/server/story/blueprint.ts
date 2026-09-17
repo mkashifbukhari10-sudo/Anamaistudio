@@ -1,9 +1,10 @@
-import { Type } from "@google/genai";
+import { Type } from "../ai/schema.js";
 import { buildCraftDoctrine, buildSceneCraftRules, storyScale } from "./story-craft.js";
 import { buildRecurringSeriesBlock, type RecurringSeriesBible } from "./recurring-series.js";
 import { buildLedger } from "./continuity-director.js";
 import {
   buildDialogueRegisterBlock,
+  buildPlannedChangesBlock,
   buildSocialFactsBlock,
   buildSocialStateBlock,
   foldSocialDeltas,
@@ -163,7 +164,11 @@ export const BLUEPRINT_SCHEMA = {
           items: {
             type: Type.OBJECT,
             properties: {
-              id: { type: Type.STRING, description: "Short stable id, lowercase with underscores, e.g. 'courtyard'" },
+              id: {
+                type: Type.STRING,
+                description:
+                  "Stable id, ALWAYS prefixed 'place_', e.g. 'place_courtyard', 'place_kitchen'. Never reuse a household id here - households and places are different things with separate id namespaces.",
+              },
               name: { type: Type.STRING, description: "How the story refers to it, e.g. 'the courtyard'" },
               belongsToHousehold: { type: Type.STRING, description: "Household id that owns it, if any" },
               fixedFeatures: {
@@ -184,16 +189,16 @@ export const BLUEPRINT_SCHEMA = {
           items: {
             type: Type.OBJECT,
             properties: {
-              id: { type: Type.STRING, description: "Short stable id" },
+              id: { type: Type.STRING, description: "Stable id, ALWAYS prefixed 'entity_', e.g. 'entity_goat'" },
               kind: { type: Type.STRING, description: "One of: animal, villager, belonging, infrastructure" },
               name: { type: Type.STRING, description: "Name, only where the story needs one" },
               tier: {
                 type: Type.STRING,
                 description:
-                  "RECURRING (appears repeatedly and needs continuity) or BACKGROUND (texture only, no continuity burden)",
+                  "RECURRING only if it will ACTUALLY APPEAR in named scenes and needs continuity - it must have real planned presence, not just make the world feel furnished. BACKGROUND for visual texture that needs no tracking. If you cannot say which scenes it appears in, it is BACKGROUND or it should be omitted.",
               },
-              ownerHouseholdId: { type: Type.STRING, description: "Household that owns it, if any" },
-              homePlaceId: { type: Type.STRING, description: "Place id where it normally is" },
+              ownerHouseholdId: { type: Type.STRING, description: "The 'household_' id that owns it, if any" },
+              homePlaceId: { type: Type.STRING, description: "The 'place_' id where it normally is" },
               caredForBy: { type: Type.STRING, description: "Character responsible for it, if any" },
               speech: {
                 type: Type.STRING,
@@ -201,6 +206,11 @@ export const BLUEPRINT_SCHEMA = {
                   "ANIMALS ONLY, decided once for the whole world: 'speaking' (talks in words), 'expressive' (no words, but readable in face and body), or 'mute' (an ordinary animal). Choose deliberately - it is a world rule and can never change later.",
               },
               storyRelevance: { type: Type.STRING, description: "Why it matters, if it does" },
+              plannedAppearances: {
+                type: Type.STRING,
+                description:
+                  "REQUIRED for RECURRING: which scenes or beats this entity actually appears in and what it does there, e.g. 'scenes 2-3 being fed, scene 10 when the family leaves'. If you cannot name where it appears, it is not RECURRING - mark it BACKGROUND or leave it out entirely.",
+              },
             },
             required: ["id", "kind", "tier"],
           },
@@ -225,17 +235,17 @@ export const BLUEPRINT_SCHEMA = {
               type: {
                 type: Type.STRING,
                 description:
-                  "What 'from' is to 'to', invented for this story: e.g. father, mother, elder sibling, grandparent, cousin, best friend, neighbour, classmate, teacher, shopkeeper they buy from. A LABEL ONLY - it must not imply a temperament.",
+                  "The CANONICAL relationship of 'from' to 'to', in plain English regardless of the story's language: parent, child, older sibling, younger sibling, grandparent, grandchild, cousin, friend, neighbour, classmate, teacher, student, shopkeeper. NEVER a name or a term of address - writing 'Ammi is Mooli's Ammi' or 'Baji is Mooli's Baji' is circular and carries no information. Characters may still be NAMED and ADDRESSED however the story's language does; this field records the underlying relationship, not what they are called. A LABEL ONLY - it must never imply a temperament.",
               },
               inverse: {
                 type: Type.STRING,
                 description:
-                  "What 'to' is to 'from' in return: e.g. 'father' -> 'child', 'teacher' -> 'student'. For symmetric bonds repeat the same word: 'classmate' -> 'classmate'.",
+                  "The canonical reciprocal, also in plain English: 'parent' -> 'child', 'older sibling' -> 'younger sibling', 'teacher' -> 'student'. For symmetric bonds repeat the word: 'classmate' -> 'classmate'.",
               },
               authority: {
                 type: Type.STRING,
                 description:
-                  "Direction of care or responsibility, structural only: 'cares-for' (from is responsible for to), 'peer', or 'defers-to' (to is responsible for from). This is NOT a statement about strictness or warmth.",
+                  "Direction of care or responsibility, structural only: 'cares-for' (from is responsible for to), 'peer', or 'defers-to' (to is responsible for from). Set it from what THIS story establishes, not from the relationship label - an older sibling is only 'cares-for' if the story actually gives them that responsibility, otherwise they are a 'peer'. This is NOT a statement about strictness or warmth.",
               },
               sharedHistory: {
                 type: Type.STRING,
@@ -252,7 +262,11 @@ export const BLUEPRINT_SCHEMA = {
           items: {
             type: Type.OBJECT,
             properties: {
-              id: { type: Type.STRING, description: "Short stable id, e.g. 'household_1'" },
+              id: {
+                type: Type.STRING,
+                description:
+                  "Stable id, ALWAYS prefixed 'household_', e.g. 'household_1'. A household is a GROUP OF PEOPLE, never a location - the place they live is a separate 'place_' entry.",
+              },
               name: { type: Type.STRING, description: "How the story refers to it, e.g. 'the house past the tube well'" },
               memberIds: { type: Type.ARRAY, description: "Character names living here", items: { type: Type.STRING } },
             },
@@ -281,8 +295,27 @@ export const BLUEPRINT_SCHEMA = {
             required: ["characterId", "lifeStage"],
           },
         },
+        plannedChanges: {
+          type: Type.ARRAY,
+          description:
+            "The relationship TURNING POINTS this story will actually dramatise - moments where how two characters stand with each other genuinely shifts. Plan only the ones that matter: a 12-scene story typically has one to three, a long film more. Many relationships legitimately never change and belong nowhere in this list. NEVER plan a change to the relationship TYPE itself - a parent does not stop being a parent. Leave empty only if no relationship changes in this story at all.",
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              characterA: { type: Type.STRING },
+              characterB: { type: Type.STRING },
+              dimension: {
+                type: Type.STRING,
+                description: "What shifts, named for this story: trust, tension, understanding, closeness, a promise, a responsibility, an unresolved disagreement",
+              },
+              atBeat: { type: Type.INTEGER, description: "Beat number where this shift happens" },
+              intendedChange: { type: Type.STRING, description: "What it becomes, in one line" },
+            },
+            required: ["characterA", "characterB", "dimension", "atBeat", "intendedChange"],
+          },
+        },
       },
-      required: ["bonds", "characterSocial"],
+      required: ["bonds", "characterSocial", "plannedChanges"],
     },
     relationships: {
       type: Type.ARRAY,
@@ -454,7 +487,9 @@ THREE TIERS, AND THEY ARE NOT INTERCHANGEABLE:
 - THE RULE: if it has a want and an arc it is a CHARACTER; otherwise it is an ENTITY. Never pad 'castPlan' with animals or bystanders, and never quietly promote a talking entity into the cast.
 - If an animal or a neighbour genuinely IS a protagonist of this story - it carries a want and changes - then put it in 'castPlan' deliberately, and it DOES count toward the cast size. That is a decision, not an accident.
 - PLACES: give every location the story actually uses an id and its 'fixedFeatures' - the things always true of it. Scenes reference the id instead of re-describing the place, which is what stops the same room drifting across the film.
+- REGISTER EACH DISTINCT RECURRING LOCATION SEPARATELY. A kitchen, a courtyard, an animal shed, a school and a shop are different places and each needs its own 'place_' entry when the story returns to it. Do NOT collapse them into one entry for the whole home. Do NOT register a location the story visits once in passing.
 - ANIMALS: decide 'speech' ONCE - speaking, expressive, or an ordinary mute animal. It is a rule of this world and can never change later. Do not default to talking animals; most village animals are not.
+- DO NOT REGISTER AN ANIMAL OR ENTITY JUST TO MAKE THE WORLD LOOK RURAL. Mark it RECURRING only if it genuinely appears in the story you are planning. If it is only atmosphere, mark it BACKGROUND or leave it out. A registered animal that never appears is a broken promise to the audience.
 - OWNERSHIP AND HOME: say which household owns an animal or belonging, where it normally is, and who cares for it. These are facts that later scenes must respect.
 - Only register what the story needs. A two-hander in a single room needs one place and no entities. An empty 'entities' list is correct far more often than a long one.
 - SIZE TO THE RUNTIME (${ctx.targetSceneCount} scenes): ${
@@ -473,11 +508,13 @@ THREE TIERS, AND THEY ARE NOT INTERCHANGEABLE:
 - Fill 'socialGraph' with the FIXED social truth of this story, separate from any arc.
 - Cover EVERY pair whose relationship matters, INCLUDING stable ones that never change. A parent-child bond is a fact even when it carries no arc; leaving it out is how a parent silently becomes a friend later.
 - State each bond in ONE direction with its 'inverse'. The reciprocal is completed automatically and must agree.
+- USE CANONICAL RELATIONSHIP WORDS, not names or terms of address. If a character is named "Ammi" or called "Baji", the bond type is still 'parent' or 'older sibling'. "Ammi is Mooli's Ammi" is circular and tells the scene department nothing. The dialogue can and should use whatever the language naturally uses.
 - Invent the arrangement THIS story needs. Do not assume a family story, and do not assume any particular family structure when there is one. Two strangers, three classmates, a shopkeeper and a regular customer are all valid social graphs.
 - A RELATIONSHIP LABEL IS A FACT, NOT A PERSONALITY TEMPLATE. It records who someone IS to another, never how they behave. Do NOT write a strict father, a nurturing mother, a wise elder, a stern teacher or a naive child because of a label. Their behaviour comes from the want, need, flaw, strength, life stage and situation you design for them individually - the same as any other character.
 - Give every cast member a 'lifeStage'. It informs what they can reach, carry, understand and are trusted with. It does NOT make anyone childish, wise or authoritative by default.
 - Add 'responsibilities' only where the story establishes them. These are everyday duties, and they are a rich source of ordinary conflict and affection.
 - Only create households if people in this story actually live together. Omit them otherwise.
+- PLAN THE RELATIONSHIP TURNING POINTS in 'socialGraph.plannedChanges'. Identify the specific beats where how two characters stand with each other genuinely shifts - someone gives in, forgives, refuses, understands, takes on another's burden, or breaks a promise. The scene department will emit the matching socialChange when it dramatises that beat. Plan only what really changes: a relationship that stays the same all story belongs nowhere in this list, and inventing shifts to fill the field is worse than leaving it empty.
 - SIZE TO THE RUNTIME (${ctx.targetSceneCount} scenes): ${
     ctx.targetSceneCount < 8
       ? "at this length record only the bonds between characters who actually share a scene, and skip households entirely unless the story is about a home."
@@ -822,6 +859,27 @@ export function buildBlueprintPromptBlock(
   const registry: WorldRegistry | null = slice?.worldRegistry ?? null;
   if (registry && !isEmptyRegistry(registry)) {
     sections.push(buildWorldFactsBlock(registry));
+
+    // Entities with a planned appearance in this range, so a RECURRING entity
+    // actually recurs instead of being registered and forgotten.
+    const plan = registry.entities
+      .filter((e) => e.tier === "RECURRING" && e.plannedAppearances)
+      .map((e) => `  - ${e.name || e.id}: ${e.plannedAppearances}`);
+    if (plan.length > 0) {
+      sections.push(
+        `RECURRING ENTITIES WITH PLANNED APPEARANCES:\n${plan.join("\n")}\n` +
+          `- Where the plan places one of these inside this scene range, it must actually be present and behave consistently with its recorded facts.\n` +
+          `- Do not force it into scenes outside its plan.`
+      );
+    }
+  }
+
+  if (graph && !isEmptyGraph(graph)) {
+    const beatNumbers = (slice?.activeBeats ?? [])
+      .map((b: any) => Number(b?.beatNumber))
+      .filter((n: number) => Number.isFinite(n));
+    const plannedBlock = buildPlannedChangesBlock(graph, beatNumbers);
+    if (plannedBlock) sections.push(plannedBlock);
   }
 
   if (slice) {

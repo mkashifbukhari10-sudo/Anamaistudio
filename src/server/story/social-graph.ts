@@ -3,9 +3,11 @@ import type {
   Household,
   RelationshipDelta,
   SocialBond,
+  PlannedSocialChange,
   SocialGraph,
   SocialStateEntry,
 } from "../../types.js";
+import { namespaceId } from "./world-registry.js";
 
 /**
  * THE SOCIAL LAYER — immutable facts about who people are to each other.
@@ -173,7 +175,8 @@ function normalizeHouseholds(raw: unknown): Household[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .map((h: any, index: number) => ({
-      id: clean(h?.id) || `household_${index + 1}`,
+      // Namespaced so a household id can never be mistaken for a place id.
+      id: namespaceId(h?.id, "household", String(index + 1)),
       name: clean(h?.name) || `household ${index + 1}`,
       memberIds: cleanList(h?.memberIds ?? h?.members),
       dwellingPlaceId: clean(h?.dwellingPlaceId) || undefined,
@@ -187,10 +190,57 @@ function normalizeCharacterSocial(raw: unknown): CharacterSocial[] {
     .map((c: any) => ({
       characterId: clean(c?.characterId ?? c?.name),
       lifeStage: clean(c?.lifeStage) || undefined,
-      householdId: clean(c?.householdId) || undefined,
+      householdId: clean(c?.householdId) ? namespaceId(c.householdId, "household", "") : undefined,
       responsibilities: cleanList(c?.responsibilities),
     }))
     .filter((c) => Boolean(c.characterId));
+}
+
+/**
+ * Make household membership agree in both directions.
+ *
+ * A real generation listed all four characters in Household.memberIds while
+ * every CharacterSocial.householdId was empty - the same fact recorded on one
+ * side only. Where membership is unambiguous the missing side is filled in;
+ * where it is contradictory nothing is guessed and the Fact Validator reports
+ * it, which is the existing report-only contract.
+ */
+function reconcileHouseholdMembership(
+  households: Household[],
+  characterSocial: CharacterSocial[]
+): string[] {
+  const fixes: string[] = [];
+
+  // memberIds -> householdId
+  for (const social of characterSocial) {
+    const containing = households.filter((h) => h.memberIds.some((m) => key(m) === key(social.characterId)));
+
+    if (containing.length === 1 && !social.householdId) {
+      social.householdId = containing[0].id;
+      fixes.push(`${social.characterId} -> ${containing[0].id} (from member list)`);
+    }
+    // containing.length > 1 is a contradiction: left alone, reported.
+  }
+
+  // householdId -> memberIds
+  for (const social of characterSocial) {
+    if (!social.householdId) continue;
+    const household = households.find((h) => h.id === social.householdId);
+    if (!household) continue;
+
+    if (!household.memberIds.some((m) => key(m) === key(social.characterId))) {
+      const elsewhere = households.some(
+        (h) => h.id !== household.id && h.memberIds.some((m) => key(m) === key(social.characterId))
+      );
+      // Only safe when they are not already claimed by another household.
+      if (!elsewhere) {
+        household.memberIds.push(social.characterId);
+        fixes.push(`${social.characterId} added to ${household.id} member list`);
+      }
+    }
+  }
+
+  return fixes;
 }
 
 /** Build the immutable social layer from raw blueprint output. */
@@ -204,11 +254,37 @@ export function buildSocialGraph(raw: any): SocialGraph {
     );
   }
 
-  return {
-    bonds,
-    households: normalizeHouseholds(raw?.households),
-    characterSocial: normalizeCharacterSocial(raw?.characterSocial),
-  };
+  const households = normalizeHouseholds(raw?.households);
+  const characterSocial = normalizeCharacterSocial(raw?.characterSocial);
+
+  const householdFixes = reconcileHouseholdMembership(households, characterSocial);
+  if (householdFixes.length > 0) {
+    console.log(`[Social] Linked ${householdFixes.length} household membership fact(s): ${householdFixes.join("; ")}`);
+  }
+
+  const plannedChanges: PlannedSocialChange[] = Array.isArray(raw?.plannedChanges)
+    ? raw.plannedChanges
+        .map((p: any) => ({
+          characterA: clean(p?.characterA),
+          characterB: clean(p?.characterB),
+          dimension: clean(p?.dimension),
+          atBeat: Number(p?.atBeat) || 0,
+          intendedChange: clean(p?.intendedChange),
+        }))
+        // A planned change to the relationship TYPE is not a state change and
+        // must never reach the scene department as one.
+        .filter(
+          (p: PlannedSocialChange) =>
+            p.characterA &&
+            p.characterB &&
+            p.dimension &&
+            p.intendedChange &&
+            key(p.characterA) !== key(p.characterB) &&
+            !/^(relationship|bond|kinship)$/i.test(p.dimension)
+        )
+    : [];
+
+  return { bonds, households, characterSocial, plannedChanges };
 }
 
 /** True when the graph carries nothing worth injecting. */
@@ -342,6 +418,32 @@ ${pairs.join("\n")}
 - The speaker's individual voice rule still applies underneath. Register modulates it; it does not replace it.`;
 }
 
+/**
+ * The relationship turning points that fall inside this batch.
+ *
+ * Scene generation previously emitted zero social deltas across two whole
+ * stories because it was told only when NOT to record one. Naming the specific
+ * beats where a shift is planned turns that from a judgement call into an
+ * instruction with a target.
+ */
+export function buildPlannedChangesBlock(
+  graph: SocialGraph,
+  beatNumbersInRange: number[]
+): string {
+  const planned = (graph.plannedChanges ?? []).filter(
+    (p) => beatNumbersInRange.length === 0 || beatNumbersInRange.includes(p.atBeat)
+  );
+  if (planned.length === 0) return "";
+
+  return `RELATIONSHIP TURNING POINTS PLANNED FOR THIS RANGE:
+${planned
+  .map((p) => `  - Beat ${p.atBeat}: ${p.characterA} and ${p.characterB} — ${p.dimension} becomes: ${p.intendedChange}`)
+  .join("\n")}
+- When you dramatise the beat above, RECORD it in that scene's 'socialChanges' with the same pair and dimension. This is how the change survives into later scenes; leaving it unrecorded loses it.
+- Record it in the scene where the shift actually HAPPENS, not before and not after.
+- Do NOT add socialChanges for anything not planned here unless a genuine, unplanned shift occurs in the scene you are writing. Most scenes record nothing, and that is correct.`;
+}
+
 /** Compact fact list for the Character Bible stage. */
 export function buildSocialContextForBible(graph: SocialGraph): string {
   if (isEmptyGraph(graph)) return "";
@@ -455,6 +557,45 @@ export function buildSocialStateBlock(state: SocialStateEntry[]): string {
 ${lines.join("\n")}
 - This is how these characters currently stand with each other. Play the scene from here; do not reset to how they began.
 - These are FEELINGS AND SITUATIONS between people, never their relationship. Who someone is to another never changes.`;
+}
+
+/**
+ * Match planned relationship turning points to the deltas actually emitted.
+ *
+ * Matching is by PAIR, not by wording. A plan for "understanding" fulfilled by
+ * a delta recording "closeness" is the same development described differently,
+ * and demanding identical vocabulary would only encourage the model to parrot
+ * the plan instead of writing the scene. Scene number is not required either:
+ * a turning point that lands a beat late is still that turning point.
+ */
+export function reconcilePlannedChanges(
+  graph: SocialGraph,
+  deltas: RelationshipDelta[]
+): { fulfilled: PlannedSocialChange[]; unfulfilled: PlannedSocialChange[]; unplanned: RelationshipDelta[] } {
+  const planned = graph.plannedChanges ?? [];
+  const usedDeltas = new Set<number>();
+  const fulfilled: PlannedSocialChange[] = [];
+  const unfulfilled: PlannedSocialChange[] = [];
+
+  for (const plan of planned) {
+    const planPair = pairKey(plan.characterA, plan.characterB);
+    const index = deltas.findIndex(
+      (d, i) => !usedDeltas.has(i) && pairKey(d.between[0], d.between[1]) === planPair
+    );
+
+    if (index >= 0) {
+      usedDeltas.add(index);
+      fulfilled.push(plan);
+    } else {
+      unfulfilled.push(plan);
+    }
+  }
+
+  return {
+    fulfilled,
+    unfulfilled,
+    unplanned: deltas.filter((_, i) => !usedDeltas.has(i)),
+  };
 }
 
 /** Counts for the generation log. */

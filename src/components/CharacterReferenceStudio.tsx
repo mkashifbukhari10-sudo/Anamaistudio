@@ -260,7 +260,7 @@ ${refPkg.negativePrompt}
                       onClick={() => onGenerateCharacterImage(char.id, refPkg.fullBodyPrompt)}
                       disabled={isGeneratingImg}
                       className="px-2.5 py-1.5 sm:px-3 sm:py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs transition disabled:opacity-50 whitespace-nowrap cursor-pointer"
-                      title="Generate character reference visual via Gemini"
+                      title="Generate character reference visual"
                     >
                       <ImageIcon className={`w-3.5 h-3.5 ${isGeneratingImg ? 'animate-spin' : ''}`} />
                       {isGeneratingImg ? 'Generating Reference...' : '🎨 Generate Visual'}

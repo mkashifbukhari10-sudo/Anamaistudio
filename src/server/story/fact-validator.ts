@@ -448,6 +448,95 @@ function checkScenes(
 }
 
 // ---------------------------------------------------------------------------
+// STATED-MORAL DETECTION — report only
+//
+// Language-agnostic by construction: instead of matching phrases, it compares
+// each spoken line against the story's OWN theme and moral text, whatever
+// language those were written in. A line that reuses the theme's distinctive
+// words is the theme being spoken aloud.
+//
+// Nothing is rewritten. A flagged line is a prompt for a human to look.
+// ---------------------------------------------------------------------------
+
+/** Distinctive words, long enough to carry meaning in most languages. */
+function themeWords(text: string): Set<string> {
+  return new Set(
+    String(text || "")
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w.length > 3)
+  );
+}
+
+function checkStatedMoral(scenes: any[], theme: string, moral: string): FactIssue[] {
+  const issues: FactIssue[] = [];
+  const concepts = new Set([...themeWords(theme), ...themeWords(moral)]);
+  if (concepts.size < 2) return issues;
+
+  const ordered = [...(scenes ?? [])].sort((a, b) => (a?.sceneNumber || 0) - (b?.sceneNumber || 0));
+  // The failure concentrates at the end, where a summary feels like closure.
+  const finalStretch = ordered.slice(Math.max(0, ordered.length - 4));
+
+  for (const scene of finalStretch) {
+    for (const turn of Array.isArray(scene?.dialogueTurns) ? scene.dialogueTurns : []) {
+      const line = clean(turn?.line);
+      if (!line) continue;
+
+      const words = [...themeWords(line)];
+      if (words.length === 0) continue;
+
+      const overlap = words.filter((w) => concepts.has(w));
+      // Two or more of the theme's own distinctive words in one short line is
+      // the theme being recited, not a character talking.
+      if (overlap.length >= 2) {
+        issues.push(
+          issue(
+            "cast",
+            `Dialogue may state the story's theme (scene ${scene.sceneNumber})`,
+            `${turn.speaker || "A character"}: "${line}" reuses theme words: ${overlap.join(", ")}.`,
+            `Meaning should land in an action or an image. Replace with something about the immediate situation, or cut the line.`,
+            "warning",
+            Number(scene.sceneNumber) || undefined
+          )
+        );
+      }
+    }
+  }
+
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
+// RECURRING ENTITIES THAT NEVER RECUR
+// ---------------------------------------------------------------------------
+
+function checkEntityUsage(scenes: any[], registry: WorldRegistry): FactIssue[] {
+  const issues: FactIssue[] = [];
+  const haystack = JSON.stringify(scenes ?? []).toLowerCase();
+
+  for (const entity of registry.entities) {
+    if (entity.tier !== "RECURRING") continue;
+
+    const needle = (entity.name || entity.id.replace(/^entity_/, "")).toLowerCase();
+    if (!needle || needle.length < 3) continue;
+
+    if (!haystack.includes(needle)) {
+      issues.push(
+        issue(
+          "entity",
+          `RECURRING entity never appears (${entity.name || entity.id})`,
+          `Registered as RECURRING but no scene mentions it.`,
+          `Either give it real presence in the story, or register it as BACKGROUND, or drop it. Do not register things merely to furnish the world.`,
+          "warning"
+        )
+      );
+    }
+  }
+
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
 // ENTRY POINT
 // ---------------------------------------------------------------------------
 
@@ -463,14 +552,19 @@ export function validateStoryFacts(params: {
   socialGraph?: SocialGraph | null;
   worldRegistry?: WorldRegistry | null;
   castNames?: string[];
+  /** Used to detect the theme being spoken aloud, in any language. */
+  theme?: string;
+  moral?: string;
 }): FactReport {
-  const { scenes = [], socialGraph = null, worldRegistry = null, castNames = [] } = params;
+  const { scenes = [], socialGraph = null, worldRegistry = null, castNames = [], theme = "", moral = "" } = params;
   const cast = new Set(castNames.map(key).filter(Boolean));
 
   const issues: FactIssue[] = [
     ...(socialGraph ? checkSocialGraph(socialGraph, cast) : []),
     ...(worldRegistry ? checkWorldRegistry(worldRegistry, cast) : []),
     ...checkScenes(scenes, socialGraph, worldRegistry, cast),
+    ...(worldRegistry ? checkEntityUsage(scenes, worldRegistry) : []),
+    ...checkStatedMoral(scenes, theme, moral),
   ];
 
   return {

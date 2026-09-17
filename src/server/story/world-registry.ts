@@ -56,6 +56,20 @@ function slug(value: string, fallback: string): string {
   return base || fallback;
 }
 
+/**
+ * Force an id into its own namespace.
+ *
+ * Households, places and entities previously shared one flat string space, and
+ * a real generation put the household id "ghar_1" into a scene's placeId while
+ * the registered place was "ghar". Namespacing makes that class of mistake
+ * impossible to express: a household id can no longer look like a place id.
+ */
+export function namespaceId(raw: unknown, prefix: "place" | "entity" | "household", fallback: string): string {
+  const base = slug(String(raw ?? ""), "");
+  const stripped = base.replace(/^(place|entity|household)_/, "");
+  return `${prefix}_${stripped || fallback}`;
+}
+
 function normalizeKind(raw: unknown): WorldEntity["kind"] {
   const value = clean(raw).toLowerCase();
   if (value === "animal" || value === "villager" || value === "belonging" || value === "infrastructure") {
@@ -90,7 +104,7 @@ function normalizePlaces(raw: unknown): Place[] {
 
   return raw
     .map((p: any, index: number) => ({
-      id: slug(p?.id || p?.name, `place_${index + 1}`),
+      id: namespaceId(p?.id || p?.name, "place", String(index + 1)),
       name: clean(p?.name),
       belongsToHousehold: clean(p?.belongsToHousehold) || undefined,
       fixedFeatures: cleanList(p?.fixedFeatures),
@@ -111,15 +125,16 @@ function normalizeEntities(raw: unknown): WorldEntity[] {
     .map((e: any, index: number) => {
       const kind = normalizeKind(e?.kind);
       return {
-        id: slug(e?.id || e?.name, `entity_${index + 1}`),
+        id: namespaceId(e?.id || e?.name, "entity", String(index + 1)),
         kind,
         name: clean(e?.name) || undefined,
         tier: normalizeTier(e?.tier),
         ownerHouseholdId: clean(e?.ownerHouseholdId) || undefined,
-        homePlaceId: clean(e?.homePlaceId) ? slug(e.homePlaceId, "") || undefined : undefined,
+        homePlaceId: clean(e?.homePlaceId) ? namespaceId(e.homePlaceId, "place", "") : undefined,
         caredForBy: clean(e?.caredForBy) || undefined,
         speech: normalizeSpeech(e?.speech, kind),
         storyRelevance: clean(e?.storyRelevance) || undefined,
+        plannedAppearances: clean(e?.plannedAppearances) || undefined,
       };
     })
     .filter((e) => {
@@ -147,10 +162,60 @@ export function buildWorldRegistry(raw: any): WorldRegistry {
   }
 
   for (const place of places) {
-    place.connectsTo = (place.connectsTo ?? []).map((c) => slug(c, "")).filter((c) => placeIds.has(c));
+    place.connectsTo = (place.connectsTo ?? [])
+      .map((c) => namespaceId(c, "place", ""))
+      .filter((c) => placeIds.has(c));
+  }
+
+  // RECURRING is a promise that the entity appears. Without a plan it is not a
+  // promise the story can keep, so it becomes BACKGROUND - which carries no
+  // continuity burden and no expectation.
+  for (const entity of entities) {
+    if (entity.tier === "RECURRING" && !entity.plannedAppearances) {
+      entity.tier = "BACKGROUND";
+      console.log(
+        `[World] "${entity.name || entity.id}" had no planned appearances - downgraded RECURRING -> BACKGROUND.`
+      );
+    }
   }
 
   return { places, entities };
+}
+
+/**
+ * Fill in entity facts the story implies but did not state.
+ *
+ * Only unambiguous inferences: a household animal in a one-household story
+ * belongs to that household; an entity whose owner has exactly one place lives
+ * there. Anything ambiguous is left for the Fact Validator to report rather
+ * than guessed at.
+ */
+export function completeEntityFacts(
+  registry: WorldRegistry,
+  householdIds: string[]
+): string[] {
+  const fixes: string[] = [];
+  const onlyHousehold = householdIds.length === 1 ? householdIds[0] : undefined;
+
+  for (const entity of registry.entities) {
+    if (entity.tier !== "RECURRING") continue;
+    const label = entity.name || entity.id;
+
+    if (!entity.ownerHouseholdId && onlyHousehold && (entity.kind === "animal" || entity.kind === "belonging")) {
+      entity.ownerHouseholdId = onlyHousehold;
+      fixes.push(`${label} owned by ${onlyHousehold}`);
+    }
+
+    if (!entity.homePlaceId && entity.ownerHouseholdId) {
+      const owned = registry.places.filter((p) => p.belongsToHousehold === entity.ownerHouseholdId);
+      if (owned.length === 1) {
+        entity.homePlaceId = owned[0].id;
+        fixes.push(`${label} lives at ${owned[0].id}`);
+      }
+    }
+  }
+
+  return fixes;
 }
 
 export function isEmptyRegistry(registry: WorldRegistry | undefined | null): boolean {
@@ -158,11 +223,84 @@ export function isEmptyRegistry(registry: WorldRegistry | undefined | null): boo
   return registry.places.length === 0 && registry.entities.length === 0;
 }
 
-/** Look up a place by id, for validation and for placeId resolution. */
+/** Look up a place by id, tolerating a missing or wrong namespace prefix. */
 export function findPlace(registry: WorldRegistry | undefined | null, placeId: string): Place | undefined {
-  if (!registry || !placeId) return undefined;
-  const wanted = slug(placeId, "");
+  if (!registry || !clean(placeId)) return undefined;
+  const wanted = namespaceId(placeId, "place", "");
   return registry.places.find((p) => p.id === wanted);
+}
+
+/**
+ * Decide which registered Place a scene actually happens in.
+ *
+ * A real generation sent the HOUSEHOLD id as a scene's placeId while the
+ * registered place had a different id, and the old logic accepted it because it
+ * only filled in EMPTY values. A wrong id is worse than a missing one: it
+ * points confidently at nothing.
+ *
+ * So a supplied id is now treated as a claim to be verified, never as truth:
+ *   1. empty          -> resolve from the location text
+ *   2. valid place id -> accept
+ *   3. anything else  -> reject it (a household id can never be a place) and
+ *                        fall back to resolving from the location text
+ *
+ * Returns what it settled on plus why, so a correction is visible rather than
+ * silent, and an unresolvable id is left undefined for the validator to report.
+ */
+export function resolveScenePlace(
+  registry: WorldRegistry | undefined | null,
+  rawPlaceId: unknown,
+  rawLocation: unknown
+): { placeId?: string; location?: string; corrected: boolean; reason?: string } {
+  const location = clean(rawLocation);
+  if (!registry || registry.places.length === 0) return { location: location || undefined, corrected: false };
+
+  const supplied = clean(rawPlaceId);
+
+  // 1. A valid id in the right field. Still repair the location if the model
+  //    ALSO wrote an id there instead of a human-readable description.
+  const direct = supplied ? findPlace(registry, supplied) : undefined;
+  if (direct) {
+    const locationIsAnId = Boolean(findPlace(registry, location));
+    return {
+      placeId: direct.id,
+      location: locationIsAnId ? direct.name : location || direct.name,
+      corrected: locationIsAnId,
+      reason: locationIsAnId ? `location held the place id "${location}"; replaced with "${direct.name}"` : undefined,
+    };
+  }
+
+  // 2. The id landed in the LOCATION field - observed in a real generation,
+  //    where every scene had location "place_kitchen" and an empty placeId.
+  const fromLocationId = findPlace(registry, location);
+  if (fromLocationId) {
+    return {
+      placeId: fromLocationId.id,
+      location: fromLocationId.name,
+      corrected: true,
+      reason:
+        `place id was in the location field ("${location}"); moved to placeId and location restored to "${fromLocationId.name}"`,
+    };
+  }
+
+  // 3. A human-readable place name in the location field.
+  const byName = resolvePlaceId(registry, location);
+  if (byName) {
+    return {
+      placeId: byName,
+      location: location,
+      corrected: Boolean(supplied),
+      reason: supplied ? `"${supplied}" is not a registered place; resolved to "${byName}" from the location text` : undefined,
+    };
+  }
+
+  // 4. Nothing resolvable. A wrong id is worse than none, so it is dropped -
+  //    a household id can never stand in for a place.
+  return {
+    location: location || undefined,
+    corrected: Boolean(supplied),
+    reason: supplied ? `"${supplied}" is not a registered place and the location text matched none` : undefined,
+  };
 }
 
 /**

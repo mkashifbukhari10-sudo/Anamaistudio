@@ -1,5 +1,5 @@
 import { AIProviderManager } from "./provider-manager.js";
-import { GeminiProvider } from "./gemini-provider.js";
+import { DeepSeekProvider } from "./deepseek-provider.js";
 import type { AIImageRequest, AIImageResponse, AITextRequest, AITextResponse } from "./types.js";
 
 /**
@@ -14,12 +14,16 @@ export const aiProviders = new AIProviderManager();
 // ---------------------------------------------------------------------------
 // PROVIDER REGISTRY - the extension point.
 //
-// GEMINI-ONLY. Gemini serves all text/story generation and all image
-// generation. It is the only adapter in this directory, so no other
-// provider is constructed and no other API key is read.
+// DEEPSEEK-ONLY. DeepSeek serves all text and story generation. It is the only
+// adapter in this directory, so no other provider is constructed and no other
+// API key is read.
 //
-// To add a provider: implement AIProvider (gemini-provider.ts is the reference
-// implementation), then register it here - nothing else in the app changes:
+// DeepSeek publishes no image endpoint, so generateImage rejects and the
+// Character Reference Studio falls back to prompt-only, which it already
+// supported.
+//
+// To add a provider: implement AIProvider (deepseek-provider.ts is the
+// reference implementation), then register it here - nothing else changes:
 //
 //   import { MistralProvider } from "./mistral-provider.js";
 //   aiProviders.register(new MistralProvider());
@@ -27,7 +31,7 @@ export const aiProviders = new AIProviderManager();
 // Registration order defines text-generation priority and the fallback default;
 // AI_PROVIDER overrides the primary at runtime.
 // ---------------------------------------------------------------------------
-aiProviders.register(new GeminiProvider());
+aiProviders.register(new DeepSeekProvider());
 
 /** Generate text with the selected provider, honouring its model fallback chain. */
 export function generateText(request: AITextRequest): Promise<AITextResponse> {
@@ -40,7 +44,8 @@ export function generateImage(request: AIImageRequest): Promise<AIImageResponse>
 }
 
 export { AIProviderManager } from "./provider-manager.js";
-export { GeminiProvider } from "./gemini-provider.js";
+export { DeepSeekProvider, MAX_SCENES_PER_BATCH } from "./deepseek-provider.js";
+export { Type, toJsonSchema, describeSchemaForPrompt } from "./schema.js";
 export {
   AllProvidersFailedError,
   classifyError,
