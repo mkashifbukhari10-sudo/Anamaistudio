@@ -26,6 +26,7 @@ import {
 } from "./src/server/story/world-registry.js";
 import { validateStoryFacts } from "./src/server/story/fact-validator.js";
 import { startCapture, endCapture, setCallContext } from "./src/server/ai/telemetry.js";
+import { startProgress, setPhase, setSceneProgress, getProgress, finishProgress } from "./src/server/progress.js";
 import { saveStoryReport } from "./src/server/dev/story-report.js";
 import type { WorldRegistry } from "./src/types.js";
 import {
@@ -599,10 +600,14 @@ async function runSceneBatchPipeline(params: {
   chapters: any[];
   logLabel: string;
   blueprint?: any;
+  /** Reports real scene counts as batches complete, for the progress bar. */
+  onProgress?: (scenesDone: number, batchesDone: number, batchesTotal: number) => void;
 }): Promise<SceneBatchOutcome> {
   const { targetSceneCount, logLabel } = params;
   const scenes: any[] = [];
   const failures: SceneBatchFailure[] = [];
+  let completedBatches = 0;
+  let plannedBatchCount = 0;
 
   const buildPreviousContext = () => {
     const last = scenes.length > 0 ? scenes[scenes.length - 1] : null;
@@ -643,6 +648,8 @@ async function runSceneBatchPipeline(params: {
         ledger: buildLedger(scenes),
       });
       scenes.push(...batchScenes);
+      completedBatches += 1;
+      params.onProgress?.(scenes.length, completedBatches, plannedBatchCount);
     } catch (err: any) {
       const reason = err?.message || String(err);
       const size = end - start + 1;
@@ -669,6 +676,7 @@ async function runSceneBatchPipeline(params: {
   };
 
   const sceneBatches = partitionSceneRanges(targetSceneCount, MAX_SCENES_PER_BATCH);
+  plannedBatchCount = sceneBatches.length;
   console.log(`[${logLabel}] Executing ${sceneBatches.length} batch(es) sequentially:`, sceneBatches);
 
   for (let bIdx = 0; bIdx < sceneBatches.length; bIdx++) {
@@ -957,6 +965,19 @@ export function createApp(options: CreateAppOptions = {}) {
   // per-route, so a newly added endpoint is protected by default.
   app.use(requireAuth);
 
+  /**
+   * Live progress for an in-flight generation.
+   *
+   * Returns `known: false` rather than a guess when no snapshot exists - the
+   * client then shows an honest indeterminate state instead of a fabricated
+   * percentage, which is the bug this replaced.
+   */
+  app.get("/api/generate-story/progress/:id", (req, res) => {
+    const progress = getProgress(String(req.params.id || ""));
+    if (!progress) return res.json({ success: true, data: { known: false } });
+    return res.json({ success: true, data: { known: true, ...progress } });
+  });
+
   // API Health Check
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", app: "Veggie Story Studio" });
@@ -966,7 +987,9 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/api/generate-story", async (req, res) => {
     // Development-only instrumentation. Off in production, and every call is
     // failure-tolerant, so none of this can affect the story itself.
-    const generationId = `gen_${Date.now().toString(36)}`;
+    // The client may supply an id so it can poll this run's progress. Falling
+    // back to a generated one keeps older callers working.
+    const generationId = String(req.body?.generationId || "").trim() || `gen_${Date.now().toString(36)}`;
     const generationStartedAt = Date.now();
     let narrativeBlueprintForReport: any = null;
     startCapture();
@@ -1052,6 +1075,8 @@ export function createApp(options: CreateAppOptions = {}) {
             : undefined,
       };
 
+      startProgress(generationId, targetSceneCount);
+      setPhase(generationId, "blueprint");
       setCallContext("blueprint");
       const blueprintResponse = await generateText({
         prompt: buildBlueprintPrompt(blueprintContext),
@@ -1187,6 +1212,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         )}\n`;
       }
 
+      setPhase(generationId, "screenplay");
       setCallContext("screenplay + character bible");
       const phase1Response = await generateText({
         prompt: phase1Prompt,
@@ -1393,6 +1419,8 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         chapters: storyData.chapters,
         blueprint: narrativeBlueprint,
         logLabel: "Phase 2",
+        onProgress: (scenesDone, batchesDone, batchesTotal) =>
+          setSceneProgress(generationId, scenesDone, batchesDone, batchesTotal),
       });
 
       // Nothing usable came back. Fail loudly rather than shipping an empty or
@@ -1417,6 +1445,8 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         characters: storyData.characters,
         worldRegistry,
       });
+
+      setPhase(generationId, "validating");
 
       // Final pass after standardisation: reconcile unbroken joins once more,
       // then report. Report only - no scene is regenerated automatically.
@@ -1516,7 +1546,8 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
       });
       if (reportPath) console.log(`[Report] Test report saved: ${reportPath}`);
 
-      return res.json({ success: true, data: storyData });
+      finishProgress(generationId, "complete");
+      return res.json({ success: true, data: { ...storyData, generationId } });
     } catch (error: any) {
       console.error("Error generating veggie story:", error);
 
@@ -1534,6 +1565,8 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         failure: { message: error?.message || String(error), stack: error?.stack },
       });
       if (reportPath) console.log(`[Report] Failure report saved: ${reportPath}`);
+
+      finishProgress(generationId, "failed", error?.message || String(error));
 
       return res.status(500).json({
         error: error.message || "Failed to generate story. Please check the server logs.",

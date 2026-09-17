@@ -1,189 +1,185 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  Film,
-  Sparkles,
-  Users,
-  Clapperboard,
-  Video,
-  ShieldCheck,
-  CheckCircle2,
-} from 'lucide-react';
+import { motion } from 'motion/react';
+import { Film, Sparkles, Users, ShieldCheck, CheckCircle2, Loader2 } from 'lucide-react';
+
+/**
+ * Live generation progress.
+ *
+ * This previously ran its own timer, climbing by a random 1-4% every 800ms and
+ * freezing at 94% no matter what the server was doing - so it read "96%" while
+ * a run was still on its first call, or had already failed. Everything shown
+ * here now comes from the server's real phase and scene counts.
+ *
+ * When progress is not yet known - the first second or two, or a serverless
+ * instance that does not hold the snapshot - it says so and shows elapsed time
+ * instead of inventing a number.
+ */
+
+export interface GenerationProgressView {
+  known: boolean;
+  phase?: string;
+  label?: string;
+  detail?: string;
+  percent?: number;
+  scenesDone?: number;
+  scenesTotal?: number;
+  batchesDone?: number;
+  batchesTotal?: number;
+}
 
 interface LoadingStateProps {
   duration?: string;
   topic?: string;
+  progress?: GenerationProgressView | null;
 }
 
-const PRODUCTION_PHASES = [
-  {
-    step: 'Phase 1: Narrative & Cast Scope Analysis',
-    detail: 'Analyzing character relationships, story arc, emotional progression & dynamic cast sizing...',
-    icon: Sparkles,
-  },
-  {
-    step: 'Phase 2: Master Character Bible Compilation',
-    detail: 'Generating 18-point physical anatomy, voice, expressions & locked visual descriptions...',
-    icon: Users,
-  },
-  {
-    step: 'Phase 3: Character Reference Studio Asset Generation',
-    detail: 'Synthesizing Full-Body, Front-Facing, Model Sheet & Flow consistency instructions for all characters...',
-    icon: ShieldCheck,
-  },
-  {
-    step: 'Phase 4: Cinematic Chapter & Multi-Act Planning',
-    detail: 'Structuring narrative beats, complications, emotional low-points, climax & wholesome moral...',
-    icon: Clapperboard,
-  },
-  {
-    step: 'Phase 5: 10-Second Production Scene Orchestration',
-    detail: 'Synthesizing shot-by-shot timeline with single visual focus, dialogue & camera blocking...',
-    icon: Film,
-  },
-  {
-    step: 'Phase 6: Google Flow & Veo Cinematography Prompts',
-    detail: 'Formatting camera motion, lighting, character consistency notes & audio direction...',
-    icon: Video,
-  },
-  {
-    step: 'Phase 7: Timeline Validation & Pre-Production Verification',
-    detail: 'Validating continuous timestamps, character presence & compiling full production package...',
-    icon: CheckCircle2,
-  },
-];
+const PHASE_ICONS: Record<string, React.ElementType> = {
+  starting: Loader2,
+  blueprint: Sparkles,
+  screenplay: Users,
+  scenes: Film,
+  validating: ShieldCheck,
+  complete: CheckCircle2,
+  failed: ShieldCheck,
+};
 
-export const LoadingState: React.FC<LoadingStateProps> = ({ duration, topic }) => {
-  const [phaseIndex, setPhaseIndex] = useState(0);
-  const [progressPercent, setProgressPercent] = useState(8);
+/** The real server phases, in order, so the UI can show what is done. */
+const PHASE_ORDER = ['blueprint', 'screenplay', 'scenes', 'validating'] as const;
+const PHASE_NAMES: Record<string, string> = {
+  blueprint: 'Story architecture',
+  screenplay: 'Screenplay & cast',
+  scenes: 'Scenes',
+  validating: 'Validation',
+};
+
+export const LoadingState: React.FC<LoadingStateProps> = ({ duration, topic, progress }) => {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
+  // Elapsed time is the one thing the client legitimately knows on its own.
   useEffect(() => {
-    const timer = setInterval(() => {
-      setElapsedSeconds((prev) => prev + 1);
-    }, 1000);
-
-    const phaseInterval = setInterval(() => {
-      setPhaseIndex((prev) => {
-        if (prev < PRODUCTION_PHASES.length - 1) {
-          return prev + 1;
-        }
-        return prev;
-      });
-    }, 3200);
-
-    const progressInterval = setInterval(() => {
-      setProgressPercent((prev) => {
-        if (prev < 94) {
-          return prev + Math.floor(Math.random() * 4) + 1;
-        }
-        return prev;
-      });
-    }, 800);
-
-    return () => {
-      clearInterval(timer);
-      clearInterval(phaseInterval);
-      clearInterval(progressInterval);
-    };
+    const timer = setInterval(() => setElapsedSeconds((prev) => prev + 1), 1000);
+    return () => clearInterval(timer);
   }, []);
 
-  const currentPhase = PRODUCTION_PHASES[phaseIndex];
-  const CurrentIcon = currentPhase.icon;
+  const formatTime = (secs: number) => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
 
-  const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m}:${String(s).padStart(2, '0')}`;
-  };
+  const known = Boolean(progress?.known);
+  const phase = progress?.phase ?? 'starting';
+  const percent = known ? Math.max(0, Math.min(100, progress?.percent ?? 0)) : 0;
+  const Icon = PHASE_ICONS[phase] ?? Loader2;
+  const currentIndex = PHASE_ORDER.indexOf(phase as (typeof PHASE_ORDER)[number]);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 15 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -15 }}
-      className="w-full max-w-3xl mx-auto my-6 bg-white border border-slate-200 rounded-2xl p-6 sm:p-10 shadow-xs text-slate-800 space-y-7"
-    >
-      {/* Studio Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200">
+    <div className="w-full bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-2xs space-y-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
-            <Film className="w-5 h-5 animate-spin" />
+            <Film className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
-              <span>AnamStudio Pre-Production Engine</span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 uppercase font-semibold">
-                Active Director
-              </span>
-            </h3>
-            <p className="text-xs text-slate-700 font-mono font-medium">
-              Elapsed Time: {formatTime(elapsedSeconds)} • Target: {duration || 'Cinematic Story'}
+            <h3 className="font-bold text-slate-900 text-sm sm:text-base">AnamStudio Pre-Production Engine</h3>
+            <p className="text-[11px] sm:text-xs text-slate-600 font-mono">
+              Elapsed {formatTime(elapsedSeconds)}
+              {duration ? ` • ${duration} story` : ''}
             </p>
           </div>
         </div>
 
-        <div className="text-right font-mono text-xs">
-          <span className="text-slate-700 font-medium">Progress: </span>
-          <span className="text-emerald-700 font-bold text-sm">{progressPercent}%</span>
+        <div className="text-right">
+          {known ? (
+            <>
+              <span className="text-xs text-slate-700 font-medium">Progress: </span>
+              <span className="text-emerald-700 font-bold text-sm">{percent}%</span>
+            </>
+          ) : (
+            <span className="text-[11px] text-slate-500 font-mono">working…</span>
+          )}
         </div>
       </div>
 
-      {/* Main Phase Display */}
-      <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 space-y-4">
-        <div className="flex items-start gap-4">
-          <div className="w-12 h-12 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-emerald-600 shrink-0 shadow-2xs">
-            <CurrentIcon className="w-6 h-6 animate-pulse" />
+      <div className="p-4 sm:p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+        <div className="flex items-start gap-3">
+          <div className="w-11 h-11 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-emerald-600 shrink-0 shadow-2xs">
+            <Icon className={`w-5 h-5 ${phase === 'starting' ? 'animate-spin' : ''}`} />
           </div>
-          <div className="space-y-1 flex-1">
-            <span className="text-xs font-mono font-bold text-emerald-700 uppercase tracking-wider">
-              {currentPhase.step}
+          <div className="min-w-0">
+            <p className="font-mono text-[11px] uppercase tracking-wider text-emerald-700 font-bold">
+              {progress?.label ?? 'Preparing'}
+            </p>
+            {topic && <p className="font-bold text-slate-900 text-sm mt-0.5 break-words">Directing “{topic}”</p>}
+            <p className="text-xs text-slate-600 mt-1 break-words">
+              {progress?.detail ?? 'Contacting the story engine…'}
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+            {known ? (
+              <motion.div
+                className="h-full bg-emerald-600 rounded-full"
+                initial={{ width: 0 }}
+                animate={{ width: `${percent}%` }}
+                transition={{ duration: 0.4, ease: 'easeOut' }}
+              />
+            ) : (
+              // Indeterminate: a moving stripe that promises nothing.
+              <motion.div
+                className="h-full w-1/3 bg-emerald-500/70 rounded-full"
+                animate={{ x: ['-100%', '300%'] }}
+                transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }}
+              />
+            )}
+          </div>
+
+          <div className="flex items-center justify-between text-[10px] font-mono text-slate-600">
+            <span>
+              {known && currentIndex >= 0
+                ? `Step ${currentIndex + 1} of ${PHASE_ORDER.length}`
+                : 'Long stories take several minutes'}
             </span>
-            <h4 className="text-lg font-bold text-slate-900 tracking-tight">
-              {topic ? `Directing "${topic}"` : 'Directing Animated Pre-Production Package'}
-            </h4>
-            <p className="text-xs text-slate-700 leading-relaxed font-medium">
-              {currentPhase.detail}
-            </p>
-          </div>
-        </div>
-
-        {/* Progress Bar */}
-        <div className="space-y-1.5 pt-2">
-          <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden border border-slate-200 relative">
-            <motion.div
-              className="h-full bg-emerald-600 rounded-full"
-              initial={{ width: '8%' }}
-              animate={{ width: `${progressPercent}%` }}
-              transition={{ ease: 'easeOut', duration: 0.5 }}
-            />
-          </div>
-          <div className="flex justify-between text-[10px] font-mono text-slate-700 font-semibold">
-            <span>Phase {phaseIndex + 1} of {PRODUCTION_PHASES.length}</span>
-            <span>Batch Scene Synthesis Enabled</span>
+            {known && phase === 'scenes' && (progress?.scenesTotal ?? 0) > 0 && (
+              <span>
+                {progress!.scenesDone ?? 0} / {progress!.scenesTotal} scenes
+                {(progress?.batchesTotal ?? 0) > 1
+                  ? ` • batch ${progress!.batchesDone ?? 0}/${progress!.batchesTotal}`
+                  : ''}
+              </span>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Production Pipeline Roadmap */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs font-mono">
-        <div className={`p-2.5 rounded-xl border ${phaseIndex >= 0 ? 'bg-white border-emerald-300 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
-          <div className="text-[10px] text-slate-700 font-semibold">01. CAST</div>
-          <div className="font-semibold text-xs mt-0.5">Dynamic Sizing</div>
-        </div>
-        <div className={`p-2.5 rounded-xl border ${phaseIndex >= 2 ? 'bg-white border-emerald-300 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
-          <div className="text-[10px] text-slate-700 font-semibold">02. BIBLE</div>
-          <div className="font-semibold text-xs mt-0.5">18-Pt Locked</div>
-        </div>
-        <div className={`p-2.5 rounded-xl border ${phaseIndex >= 4 ? 'bg-white border-emerald-300 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
-          <div className="text-[10px] text-slate-700 font-semibold">03. SCENES</div>
-          <div className="font-semibold text-xs mt-0.5">10s Precision</div>
-        </div>
-        <div className={`p-2.5 rounded-xl border ${phaseIndex >= 5 ? 'bg-white border-emerald-300 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
-          <div className="text-[10px] text-slate-700 font-semibold">04. PROMPTS</div>
-          <div className="font-semibold text-xs mt-0.5">Google Flow / Veo</div>
-        </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        {PHASE_ORDER.map((step, index) => {
+          const done = known && currentIndex > index;
+          const active = known && currentIndex === index;
+          return (
+            <div
+              key={step}
+              className={`px-3 py-2 rounded-xl border text-left transition-colors ${
+                done
+                  ? 'bg-emerald-50 border-emerald-300'
+                  : active
+                  ? 'bg-white border-emerald-400 ring-1 ring-emerald-400/30'
+                  : 'bg-white border-slate-200'
+              }`}
+            >
+              <p className="font-mono text-[10px] text-slate-500">
+                {String(index + 1).padStart(2, '0')}
+                {done ? ' ✓' : ''}
+              </p>
+              <p
+                className={`text-[11px] font-bold ${
+                  done || active ? 'text-emerald-800' : 'text-slate-600'
+                }`}
+              >
+                {PHASE_NAMES[step]}
+              </p>
+            </div>
+          );
+        })}
       </div>
-    </motion.div>
+    </div>
   );
 };

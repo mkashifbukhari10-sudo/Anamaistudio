@@ -19,7 +19,7 @@ import { DurationSelector } from './components/DurationSelector';
 import { StyleSelector } from './components/StyleSelector';
 import { CharacterCountSelector } from './components/CharacterCountSelector';
 import { StoryDisplay } from './components/StoryDisplay';
-import { LoadingState } from './components/LoadingState';
+import { LoadingState, type GenerationProgressView } from './components/LoadingState';
 import { LoginScreen } from './components/LoginScreen';
 import { ProductionPackageModal } from './components/ProductionPackageModal';
 import { playPopSound, playSuccessChime } from './utils/audio';
@@ -89,6 +89,9 @@ export default function App() {
   const [animationStyle, setAnimationStyle] = useState<AnimationStyle>('Cute 3D');
   // 'Auto' keeps the engine's runtime-based cast sizing.
   const [characterCount, setCharacterCount] = useState<CharacterCount>('Auto');
+  // Real server-reported progress for the current generation, replacing the
+  // simulated bar that used to climb on a timer regardless of actual state.
+  const [generationProgress, setGenerationProgress] = useState<GenerationProgressView | null>(null);
 
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -215,6 +218,26 @@ export default function App() {
     handlePopSound();
     setError(null);
     setIsLoading(true);
+    setGenerationProgress(null);
+
+    // Generated here so the client can poll THIS run's progress while the
+    // single long request is still in flight.
+    const generationId = `gen_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/generate-story/progress/${generationId}`, {
+          credentials: 'same-origin',
+        });
+        if (!res.ok) return;
+        const body = await res.json();
+        // `known: false` means no snapshot yet - the UI shows an honest
+        // indeterminate state rather than inventing a percentage.
+        if (body?.data) setGenerationProgress(body.data);
+      } catch {
+        // Polling is cosmetic; a failed poll must never disturb generation.
+      }
+    }, 1500);
 
     try {
       // If characters were already defined and locked in a previous run, pass them along
@@ -226,6 +249,7 @@ export default function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          generationId,
           language,
           topic: topic.trim(),
           duration,
@@ -261,6 +285,8 @@ export default function App() {
       }
       setError(message);
     } finally {
+      clearInterval(poll);
+      setGenerationProgress(null);
       setIsLoading(false);
     }
   };
@@ -636,7 +662,7 @@ export default function App() {
           <AnimatePresence mode="wait">
             {isLoading ? (
               <div className="sm:px-0">
-                <LoadingState key="loading" duration={duration} topic={topic} />
+                <LoadingState key="loading" duration={duration} topic={topic} progress={generationProgress} />
               </div>
             ) : generatedStory && !showSetupWorkbench ? (
               <StoryDisplay
