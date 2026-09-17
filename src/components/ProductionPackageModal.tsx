@@ -148,8 +148,17 @@ export const ProductionPackageModal: React.FC<ProductionPackageModalProps> = ({
       }
       md += `- **Character Consistency Verification:** ${scene.characterConsistencyNotes}\n`;
       md += `- **Visual Summary:** ${scene.visualDescription}\n\n`;
-      md += `#### 🎥 Google Flow / Veo Video Generation Prompt (Scene #${scene.sceneNumber})\n`;
+      if (scene.frameHandoff) {
+        const chain = scene.frameHandoff.type === 'CHAIN';
+        md += `#### ${chain ? '🔗' : '✂️'} Step 1 — Frame Handoff (${scene.frameHandoff.type})\n`;
+        md += `${scene.frameHandoff.instruction}\n\n`;
+      }
+      md += `#### 🎥 Step 2 — Positive Prompt → paste into the Flow / Veo prompt box (Scene #${scene.sceneNumber})\n`;
       md += `\`\`\`text\n${scene.finalVideoPrompt}\n\`\`\`\n\n`;
+      if (scene.negativePrompt) {
+        md += `#### 🚫 Step 3 — Negative Prompt → paste into Flow / Veo's NEGATIVE field, never the prompt box\n`;
+        md += `\`\`\`text\n${scene.negativePrompt}\n\`\`\`\n\n`;
+      }
     });
 
     return md;

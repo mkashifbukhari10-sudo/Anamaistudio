@@ -31,6 +31,43 @@ const IMAGE_MODELS_FALLBACK_ORDER = [
 ];
 
 const TEXT_TIMEOUT_MS = 35000;
+
+/**
+ * Failures that every model in the chain will reproduce.
+ *
+ * Auth, permission and malformed-request errors are properties of the key, the
+ * project or the payload - not of the model - so retrying across the fallback
+ * chain costs several seconds and yields the same result. Quota (429) and
+ * unavailability (503) are genuinely per-model and stay retryable.
+ */
+function isTerminalFailure(code: unknown, rawMsg: string): boolean {
+  const numeric = Number(code);
+  if (numeric === 401 || numeric === 403 || numeric === 400 || numeric === 404) return true;
+  return (
+    /PERMISSION_DENIED|UNAUTHENTICATED|API key not valid|API_KEY_INVALID|denied access|INVALID_ARGUMENT|NOT_FOUND/i.test(
+      rawMsg
+    )
+  );
+}
+
+/** Plain-language cause, so the log names the real problem. */
+function describeTerminalFailure(code: unknown, rawMsg: string): string {
+  if (/denied access|PERMISSION_DENIED/i.test(rawMsg)) {
+    return "HTTP 403 - the Google project behind GEMINI_API_KEY is denied access to generateContent. " +
+      "The key itself is valid (it can list models); the PROJECT is blocked. Create a key against a " +
+      "different project at https://aistudio.google.com/apikey, or enable billing on this one";
+  }
+  if (/API key not valid|API_KEY_INVALID|UNAUTHENTICATED/i.test(rawMsg)) {
+    return "the GEMINI_API_KEY is invalid or expired - issue a new one at https://aistudio.google.com/apikey";
+  }
+  if (Number(code) === 404 || /NOT_FOUND/i.test(rawMsg)) {
+    return "the model name does not exist for this key - check TEXT_MODELS_FALLBACK_ORDER";
+  }
+  if (Number(code) === 400 || /INVALID_ARGUMENT/i.test(rawMsg)) {
+    return "the request was malformed (schema or payload), not a service problem";
+  }
+  return `HTTP ${String(code)}`;
+}
 const IMAGE_TIMEOUT_MS = 20000;
 
 export class GeminiProvider implements AIProvider {
@@ -40,6 +77,7 @@ export class GeminiProvider implements AIProvider {
   readonly supportsImages = true;
   readonly textModels = TEXT_MODELS_FALLBACK_ORDER;
   readonly imageModels = IMAGE_MODELS_FALLBACK_ORDER;
+
 
   isConfigured(): boolean {
     return !!process.env.GEMINI_API_KEY;
@@ -56,6 +94,7 @@ export class GeminiProvider implements AIProvider {
       // Tagged 'auth' so the manager treats it as terminal. Message unchanged.
       throw tagError(new Error("GEMINI_API_KEY environment variable is missing."), "auth");
     }
+
     return new GoogleGenAI({
       apiKey,
       httpOptions: {
@@ -112,8 +151,21 @@ export class GeminiProvider implements AIProvider {
           rawMsg.includes("RESOURCE_EXHAUSTED") ||
           rawMsg.includes("UNAVAILABLE");
 
-        const briefReason = isQuotaOrBusy ? "rate-limited or temporary high demand" : "service busy";
-        console.log(`[Gemini Text] Model '${model}' was ${briefReason}. Moving to next fallback model...`);
+        // A terminal failure is the same on every model: a denied project, a
+        // bad key or a malformed request will not start working on the next
+        // one. Walking the whole chain wastes seconds and, worse, reports the
+        // cause as "service busy" - which sends you looking for an outage that
+        // is not there.
+        if (isTerminalFailure(code, rawMsg)) {
+          console.error(
+            `[Gemini Text] Model '${model}' failed terminally (${describeTerminalFailure(code, rawMsg)}). ` +
+              `Not trying the remaining ${models.length - mIdx - 1} fallback model(s) - they would fail identically.`
+          );
+          throw err;
+        }
+
+        const briefReason = isQuotaOrBusy ? "rate-limited or temporary high demand" : "a transient error";
+        console.log(`[Gemini Text] Model '${model}' hit ${briefReason}. Moving to next fallback model...`);
 
         if (mIdx < models.length - 1) {
           const delay = isQuotaOrBusy ? 600 : 300;
@@ -175,7 +227,17 @@ export class GeminiProvider implements AIProvider {
       } catch (err: any) {
         lastError = err;
         const msg = err?.message || String(err);
+        const code = err?.status || err?.code || err?.error?.code;
         const isQuota = msg.includes("429") || msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED");
+
+        if (isTerminalFailure(code, msg)) {
+          console.error(
+            `[Gemini Image] Model '${model}' failed terminally (${describeTerminalFailure(code, msg)}). ` +
+              `Skipping the remaining fallback model(s). The reference prompt is still available to copy.`
+          );
+          throw err;
+        }
+
         console.log(`[Gemini Image] Model '${model}' ${isQuota ? 'requires paid API quota' : 'unavailable'}. Prompt is available to copy.`);
         if (mIdx < models.length - 1) {
           await new Promise((resolve) => setTimeout(resolve, 300));

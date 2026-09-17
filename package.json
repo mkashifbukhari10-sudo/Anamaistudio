@@ -10,6 +10,8 @@
     "build:server": "esbuild prod-server.ts --bundle --platform=node --format=cjs --packages=external --outfile=build/server/index.cjs",
     "start": "node build/server/index.cjs",
     "clean": "rm -rf dist build server.js",
+    "hash-password": "tsx scripts/hash-password.ts",
+    "generate-secret": "tsx scripts/generate-secret.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

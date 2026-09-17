@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   StoryLanguage,
   StoryDuration,
   StoryMode,
   AnimationStyle,
+  CharacterCount,
   VeggieStory,
   CharacterBibleEntry,
   StudioTab,
@@ -16,8 +17,10 @@ import { StoryModeSelector } from './components/StoryModeSelector';
 import { TopicInput } from './components/TopicInput';
 import { DurationSelector } from './components/DurationSelector';
 import { StyleSelector } from './components/StyleSelector';
+import { CharacterCountSelector } from './components/CharacterCountSelector';
 import { StoryDisplay } from './components/StoryDisplay';
 import { LoadingState } from './components/LoadingState';
+import { LoginScreen } from './components/LoginScreen';
 import { ProductionPackageModal } from './components/ProductionPackageModal';
 import { playPopSound, playSuccessChime } from './utils/audio';
 import {
@@ -67,13 +70,25 @@ function describeIncompleteGeneration(report: SceneGenerationReport): string {
   );
 }
 
+interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+}
+
 export default function App() {
+  // null = signed out. undefined = not asked yet, so the app shows nothing
+  // rather than flashing the login screen at someone who has a valid session.
+  const [authUser, setAuthUser] = useState<AuthUser | null | undefined>(undefined);
+
   const [language, setLanguage] = useState<StoryLanguage>('Roman Urdu');
   const [storyMode, setStoryMode] = useState<StoryMode>('Cinematic Emotional');
   const [topic, setTopic] = useState<string>('Gajar aur Tamatar ki dosti');
   const [duration, setDuration] = useState<StoryDuration>('10 minutes');
   const [customMinutes, setCustomMinutes] = useState<number>(10);
   const [animationStyle, setAnimationStyle] = useState<AnimationStyle>('Cute 3D');
+  // 'Auto' keeps the engine's runtime-based cast sizing.
+  const [characterCount, setCharacterCount] = useState<CharacterCount>('Auto');
 
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -97,10 +112,19 @@ export default function App() {
   const safeFetchJson = async (url: string, options?: RequestInit): Promise<any> => {
     let res: Response;
     try {
-      res = await fetch(url, options);
+      // same-origin sends the httpOnly session cookie. Without it every API
+      // call arrives unauthenticated and comes straight back as a 401.
+      res = await fetch(url, { credentials: 'same-origin', ...options });
     } catch (netErr: any) {
       console.error('Network fetch failed:', netErr);
       throw new Error('Unable to reach the studio backend server. Please check your connection and try again.');
+    }
+
+    // An expired or revoked session drops the user back to the login screen
+    // rather than surfacing a raw 401 in the middle of a generation.
+    if (res.status === 401) {
+      setAuthUser(null);
+      throw new Error('Your session has expired. Please sign in again.');
     }
 
     const text = await res.text();
@@ -128,6 +152,41 @@ export default function App() {
 
     return json;
   };
+
+  // Ask the server once on load whether this browser already holds a valid
+  // session cookie. The cookie is httpOnly, so the page cannot inspect it
+  // directly - only the server can answer.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled) setAuthUser(data?.authenticated ? data.user : null);
+      } catch {
+        // Server unreachable: treat as signed out. The login screen surfaces
+        // the connection error when they try to sign in.
+        if (!cancelled) setAuthUser(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch {
+      // Clearing local state regardless is the safer failure: the cookie
+      // expires on its own, and leaving the UI signed in would be worse.
+    }
+    setAuthUser(null);
+    setGeneratedStory(null);
+    setError(null);
+  }, []);
 
   const handlePopSound = () => {
     if (soundEnabled) {
@@ -173,6 +232,7 @@ export default function App() {
           storyMode,
           customMinutes,
           animationStyle,
+          characterCount,
           lockedCharacters:
             lockedCharacters && lockedCharacters.length > 0 ? lockedCharacters : undefined,
         }),
@@ -231,6 +291,12 @@ export default function App() {
           storyMode: generatedStory.storyMode,
           animationStyle: generatedStory.animationStyle,
           fullStoryText: generatedStory.fullStoryText,
+          // Reuse the size this story was generated with, so regenerating the
+          // cast does not silently change how many characters it has.
+          characterCount: generatedStory.characterCount ?? characterCount,
+          // Established relationships, life stages and households must survive
+          // a cast rebuild rather than being reinvented.
+          socialGraph: generatedStory.socialGraph,
           lockedCharacters,
           charactersToKeep,
           existingCharacters: generatedStory.characters,
@@ -520,6 +586,16 @@ export default function App() {
     </motion.div>
   ) : null;
 
+  // Session state still unknown: render nothing for the moment it takes to
+  // ask the server, so a signed-in user never sees the login form flash.
+  if (authUser === undefined) {
+    return <div className="min-h-screen bg-slate-50" />;
+  }
+
+  if (authUser === null) {
+    return <LoginScreen onAuthenticated={setAuthUser} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-emerald-100 selection:text-emerald-900">
       {/* Studio Header */}
@@ -530,6 +606,8 @@ export default function App() {
         hasActiveStory={!!generatedStory}
         onOpenExportPackage={() => setIsPackageModalOpen(true)}
         onNewStory={handleNewStorySetup}
+        currentUserName={authUser.displayName}
+        onSignOut={handleSignOut}
       />
 
       <div className="flex-1 flex max-w-7xl w-full mx-auto">
@@ -669,7 +747,14 @@ export default function App() {
                     onPlayPop={handlePopSound}
                   />
 
-                  {/* 6. Primary Generate Button */}
+                  {/* 6. Cast Size Selector */}
+                  <CharacterCountSelector
+                    value={characterCount}
+                    onChange={setCharacterCount}
+                    onPlayPop={handlePopSound}
+                  />
+
+                  {/* 7. Primary Generate Button */}
                   <div className="pt-4 border-t border-slate-200">
                     <button
                       id="generate-story-button"

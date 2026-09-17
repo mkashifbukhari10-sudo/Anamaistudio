@@ -7,6 +7,7 @@ import {
   PlusCircle,
   Menu,
   Sparkles,
+  LogOut,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -16,6 +17,8 @@ interface HeaderProps {
   hasActiveStory?: boolean;
   onOpenExportPackage?: () => void;
   onNewStory?: () => void;
+  currentUserName?: string;
+  onSignOut?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -25,6 +28,8 @@ export const Header: React.FC<HeaderProps> = ({
   hasActiveStory = false,
   onOpenExportPackage,
   onNewStory,
+  currentUserName,
+  onSignOut,
 }) => {
   return (
     <header className="w-full bg-white border-b border-slate-200 sticky top-0 z-40 shadow-2xs">
@@ -112,6 +117,21 @@ export const Header: React.FC<HeaderProps> = ({
               </>
             )}
           </button>
+
+          {onSignOut && (
+            <button
+              type="button"
+              id="sign-out-btn"
+              onClick={onSignOut}
+              title={currentUserName ? `Sign out ${currentUserName}` : 'Sign out'}
+              className="p-2 rounded-lg border border-slate-300 bg-slate-100 text-slate-700 hover:text-slate-900 hover:bg-slate-200 transition-colors flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+            >
+              <LogOut className="w-4 h-4 text-slate-600" />
+              <span className="hidden md:inline font-mono text-[11px]">
+                {currentUserName ? `Sign out · ${currentUserName}` : 'Sign out'}
+              </span>
+            </button>
+          )}
         </div>
       </div>
     </header>

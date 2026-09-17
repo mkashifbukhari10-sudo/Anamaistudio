@@ -32,6 +32,18 @@ export type StoryMode =
 
 export type AnimationStyle = 'Cute 3D' | 'Cartoon' | 'Cinematic 3D';
 
+/**
+ * User control over cast size.
+ *
+ * 'Auto' keeps the runtime-based sizing the story engine already applies. A
+ * number pins the cast to exactly that many characters; it constrains SIZE
+ * only, never who those characters are - identities, roles, personalities and
+ * world stay fully dynamic.
+ */
+export type CharacterCount = 'Auto' | 2 | 3 | 4 | 5 | 6;
+
+export const CHARACTER_COUNT_OPTIONS: CharacterCount[] = ['Auto', 2, 3, 4, 5, 6];
+
 export interface CharacterBibleEntry {
   id: string;
   name: string;
@@ -79,15 +91,76 @@ export interface DialogueTurn {
   accompanyingAction?: string;
 }
 
+/**
+ * How Scene N joins to Scene N-1 in the editing timeline.
+ *
+ * CUT   - a normal edit: new angle, location or moment. The viewer expects a
+ *         visual break, so the two clips do not need matching pixels.
+ * CHAIN - the action flows unbroken across the join. To make the seam
+ *         invisible the last frame of the previous clip has to be uploaded as
+ *         this clip's first-frame reference in Flow; prompt text alone cannot
+ *         reproduce the same face, palette and lighting twice.
+ */
+export type ShotTransitionType = 'CUT' | 'CHAIN';
+
+/**
+ * The manual step the operator performs in Flow / Higgsfield before pasting
+ * this scene's prompt. Emitted per scene so the whole timeline can be worked
+ * through without deciding, shot by shot, which joins need frame chaining.
+ */
+export interface FrameHandoff {
+  type: ShotTransitionType;
+  /** Human-readable workflow step shown in the UI and the export. */
+  instruction: string;
+  /** For CHAIN: the scene whose final frame becomes this scene's first frame. */
+  sourceSceneNumber?: number;
+}
+
 export interface SceneTransitionContract {
   previousSceneEnd: string;
   thisSceneStart: string;
   thisSceneAction: string;
   thisSceneEnd: string;
   nextSceneHandoff: string;
+  transitionType?: ShotTransitionType;
+  /** Set when the engine rewrote this scene's opening to match the previous end. */
+  reconciled?: boolean;
+}
+
+/**
+ * Where the camera is, and what it is doing, at a scene's final frame.
+ *
+ * Tracked so the next shot can be motivated by this one rather than chosen in
+ * isolation: a camera still moving at the cut should continue or settle, and
+ * screen direction should hold across an unbroken join.
+ */
+export interface CameraState {
+  shotSize: string;
+  angle: string;
+  movement: string;
+  /** True when the camera is still in motion as the scene ends. */
+  stillMovingAtCut?: boolean;
+  /** Which way the action reads across frame, e.g. "left-to-right". */
+  screenDirection: string;
+}
+
+/** One character's complete physical and emotional state at a given frame. */
+export interface CharacterSnapshot {
+  name: string;
+  position: string;
+  pose: string;
+  emotion: string;
+  /** What they are holding, and in which hand. "nothing" when empty-handed. */
+  holding: string;
 }
 
 export interface ContinuityState {
+  /**
+   * Which registered Place this is. The single integration point between the
+   * World Registry and physical continuity: it lets the validator compare
+   * place IDENTITY instead of comparing prose.
+   */
+  placeId?: string;
   location: string;
   timeOfDay: string;
   weather: string;
@@ -100,6 +173,9 @@ export interface ContinuityState {
   environmentState: string;
   storyGoals?: string;
   unresolvedConflicts?: string;
+  /** Per-character snapshot, preserved alongside the flattened maps above. */
+  characters?: CharacterSnapshot[];
+  cameraState?: CameraState;
 }
 
 export interface ContinuityIssue {
@@ -139,7 +215,18 @@ export interface ScenePlannerItem {
   continuityIntoNext: string;
   characterConsistencyNotes: string;
   visualDescription: string;
+  /**
+   * The positive prompt, pasted into Flow / Veo on its own. Self-contained:
+   * it describes the opening frame in absolute terms rather than referring to
+   * a previous shot the model cannot see.
+   */
   finalVideoPrompt: string;
+  /** Visual-artifact suppression list for Flow's dedicated negative field. */
+  negativePrompt?: string;
+  /** How this scene joins the previous one. Drives frameHandoff. */
+  transitionType?: ShotTransitionType;
+  /** CUT vs CHAIN, plus the frame-upload step when the join must be seamless. */
+  frameHandoff?: FrameHandoff;
   // Shot-to-Shot Continuity Handoff System
   startState?: string;
   primaryAction?: string;
@@ -311,6 +398,172 @@ export interface SceneGenerationReport {
   failedBatches: SceneBatchFailure[];
 }
 
+/**
+ * A directional social fact between two characters.
+ *
+ * `type` is a LABEL, never a personality template. "father" records who someone
+ * IS to another, not how they behave: behaviour keeps coming from personality,
+ * want, need, flaw, life stage, current emotion, responsibilities and situation,
+ * exactly as it does today. A bond constrains nothing about temperament.
+ */
+export interface SocialBond {
+  /** Character id or name this bond points FROM. */
+  from: string;
+  /** Character id or name this bond points TO. */
+  to: string;
+  /** Dynamic label invented for this story: "father", "classmate", "neighbour". */
+  type: string;
+  /** What `to` is to `from` in return: the reciprocal label. */
+  inverse: string;
+  /**
+   * Direction of care or responsibility - structural, not behavioural.
+   * Says who is responsible for whom, never who is strict or gentle.
+   */
+  authority?: 'cares-for' | 'peer' | 'defers-to';
+  /** One line of shared past, if the story has one. Feeds dialogue shorthand. */
+  sharedHistory?: string;
+}
+
+/** A group of characters who live together. Structure is invented per story. */
+export interface Household {
+  id: string;
+  /** How the story refers to it, e.g. "the house past the tube well". */
+  name: string;
+  memberIds: string[];
+  /** Populated in Phase 2 when the World Registry exists. */
+  dwellingPlaceId?: string;
+}
+
+/** Social attributes attached to a cast member. */
+export interface CharacterSocial {
+  characterId: string;
+  /** Dynamic: "small child", "young adult", "elder". Never an enum. */
+  lifeStage?: string;
+  householdId?: string;
+  /** What this character is responsible for in everyday life. */
+  responsibilities?: string[];
+}
+
+/**
+ * A recorded change in how two characters stand with each other.
+ *
+ * STATE, never FACT. A delta can say trust dropped or a promise was made; it
+ * can never say who someone is to another. Relationship facts live in
+ * `SocialGraph` and are structurally unreachable from here — deltas are stored
+ * separately and nothing folds them back into the graph.
+ */
+export interface RelationshipDelta {
+  sceneNumber: number;
+  /** The two characters, order-insensitive. */
+  between: [string, string];
+  /** Dynamic, only what this story needs: "trust", "tension", "a promise". */
+  dimension: string;
+  /** What changed, in one line. */
+  change: string;
+}
+
+/** Current social state, folded from deltas — latest value per pair+dimension. */
+export interface SocialStateEntry {
+  between: [string, string];
+  dimension: string;
+  current: string;
+  sinceScene: number;
+}
+
+/**
+ * A location with a persistent identity.
+ *
+ * Without this, `ContinuityState.location` is only a per-scene string, so the
+ * same kitchen is re-invented sixty times and drifts. A Place is established
+ * once and referenced by id thereafter.
+ */
+export interface Place {
+  id: string;
+  /** How the story refers to it, e.g. "the courtyard". */
+  name: string;
+  /** Household that owns it, when it belongs to one. */
+  belongsToHousehold?: string;
+  /**
+   * Things that are ALWAYS true of this place and must not change between
+   * scenes: "a neem tree at the north wall, a charpai beneath it".
+   */
+  fixedFeatures: string[];
+  /** Ids of places reachable from here, for believable movement. */
+  connectsTo?: string[];
+}
+
+/**
+ * Something that recurs in the world without being a story character.
+ *
+ * Animals, neighbours, shopkeepers, belongings and infrastructure live here.
+ * Crucially, entities do NOT consume the user's Character Count: that governs
+ * the dramatic cast only. An entity becomes a character only by deliberate
+ * promotion into castPlan, at which point it does count.
+ */
+export interface WorldEntity {
+  id: string;
+  kind: 'animal' | 'villager' | 'belonging' | 'infrastructure';
+  name?: string;
+  /** RECURRING appears repeatedly and needs continuity; BACKGROUND is texture. */
+  tier: 'RECURRING' | 'BACKGROUND';
+  ownerHouseholdId?: string;
+  /** Place this normally lives, is kept, or is found. */
+  homePlaceId?: string;
+  /** Character responsible for it, if any. */
+  caredForBy?: string;
+  /**
+   * Animals only. Decided once for the whole world and then fixed, so a cow
+   * cannot talk in one scene and be an ordinary animal in the next.
+   */
+  speech?: 'speaking' | 'expressive' | 'mute';
+  storyRelevance?: string;
+}
+
+/**
+ * The persistent world: places and the things that live in them.
+ *
+ * Facts, like the social graph. Established at blueprint time, injected into
+ * scene batches, never rewritten by scene generation.
+ */
+export interface WorldRegistry {
+  places: Place[];
+  entities: WorldEntity[];
+}
+
+/**
+ * The immutable social layer of a story.
+ *
+ * Established once at blueprint time and injected verbatim into every scene
+ * batch, which is what stops relationships drifting across a long timeline.
+ * Scene generation reads it and never rewrites it.
+ */
+export interface SocialGraph {
+  bonds: SocialBond[];
+  households: Household[];
+  characterSocial: CharacterSocial[];
+}
+
+/**
+ * An identity or social-fact problem found by the fact validator.
+ *
+ * Distinct from ContinuityIssue, which covers physical state. This covers who
+ * someone is, where a place is, and who owns what.
+ */
+export interface FactIssue {
+  kind: 'relationship' | 'household' | 'life-stage' | 'place' | 'entity' | 'cast';
+  sceneNumber?: number;
+  title: string;
+  detail: string;
+  suggestedFix: string;
+  severity: 'warning' | 'info';
+}
+
+export interface FactReport {
+  issues: FactIssue[];
+  warnings: number;
+  infos: number;
+}
+
 export interface VeggieStory {
   id?: string;
   title: string;
@@ -319,6 +572,8 @@ export interface VeggieStory {
   duration: string;
   storyMode?: StoryMode;
   animationStyle?: string;
+  /** Cast-size control used for this story, so regeneration reuses it. */
+  characterCount?: CharacterCount;
   isLongForm?: boolean;
   estimatedScenesCount?: number;
   chapters?: StoryChapter[];
@@ -333,6 +588,22 @@ export interface VeggieStory {
   sceneGeneration?: SceneGenerationReport;
   narrativeBlueprint?: NarrativeBlueprint;
   storyQuality?: StoryQualityReport;
+  continuityReport?: ContinuityReport;
+  /** Immutable social facts, persisted so regeneration cannot destroy them. */
+  socialGraph?: SocialGraph;
+  /** Persistent places and world entities, persisted for the same reason. */
+  worldRegistry?: WorldRegistry;
+  /** Identity and social fact findings. Report only - nothing auto-fixed. */
+  factReport?: FactReport;
+}
+
+/** Continuity outcome for a generated story. Report only - nothing auto-fixed. */
+export interface ContinuityReport {
+  /** Unbroken joins whose opening was reset to the previous ending. */
+  reconciledJoins: number;
+  warnings: number;
+  infos: number;
+  scenesWithIssues: number;
 }
 
 export interface TopicSuggestion {

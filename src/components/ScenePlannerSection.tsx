@@ -131,8 +131,14 @@ ${scene.dialogue}
 - Into Next: ${scene.continuityIntoNext}
 - Character Bible Consistency: ${scene.characterConsistencyNotes}
 
-8. FINAL VIDEO GENERATION PROMPT (English for Google Flow / Veo):
-${scene.finalVideoPrompt}`;
+8. FRAME HANDOFF (do this in Flow BEFORE pasting the prompt):
+${scene.frameHandoff ? scene.frameHandoff.instruction : 'CUT - generate from the prompt alone.'}
+
+9. POSITIVE PROMPT (paste into the Flow / Veo prompt box):
+${scene.finalVideoPrompt}
+
+10. NEGATIVE PROMPT (paste into Flow / Veo's NEGATIVE field, never the prompt box):
+${scene.negativePrompt || ''}`;
 
     try {
       await navigator.clipboard.writeText(text);
@@ -148,7 +154,10 @@ ${scene.finalVideoPrompt}`;
     const allPromptsText = scenes
       .map(
         (scene) =>
-          `// --- SCENE ${String(scene.sceneNumber).padStart(2, '0')} (${scene.timeRange}) ---\n${scene.finalVideoPrompt}`
+          `// --- SCENE ${String(scene.sceneNumber).padStart(2, '0')} (${scene.timeRange}) ---\n` +
+          `// ${scene.frameHandoff ? scene.frameHandoff.instruction : 'CUT - generate from the prompt alone.'}\n` +
+          `${scene.finalVideoPrompt}\n` +
+          `// NEGATIVE FIELD: ${scene.negativePrompt || ''}`
       )
       .join('\n\n');
 
@@ -464,9 +473,35 @@ ${scene.finalVideoPrompt}`;
                           </button>
                         </div>
 
+                        {scene.frameHandoff && (
+                          <div
+                            className={`flex items-start gap-2 text-[11px] p-2.5 rounded-lg border font-medium ${
+                              scene.frameHandoff.type === 'CHAIN'
+                                ? 'bg-violet-50 border-violet-300 text-violet-900'
+                                : 'bg-slate-50 border-slate-200 text-slate-700'
+                            }`}
+                          >
+                            <span className="shrink-0 font-mono font-bold">
+                              {scene.frameHandoff.type === 'CHAIN' ? '🔗 CHAIN' : '✂️ CUT'}
+                            </span>
+                            <span className="break-words">{scene.frameHandoff.instruction}</span>
+                          </div>
+                        )}
+
                         <p className="text-xs sm:text-sm text-amber-950 leading-relaxed bg-white p-3 sm:p-3.5 rounded-lg border border-amber-200 font-mono select-all break-words">
                           {scene.finalVideoPrompt}
                         </p>
+
+                        {scene.negativePrompt && (
+                          <div className="space-y-1.5">
+                            <h6 className="font-mono font-bold text-[11px] uppercase tracking-wider text-rose-800">
+                              Negative Prompt — Flow&apos;s negative field only
+                            </h6>
+                            <p className="text-[11px] sm:text-xs text-rose-950 leading-relaxed bg-rose-50 p-2.5 sm:p-3 rounded-lg border border-rose-200 font-mono select-all break-words">
+                              {scene.negativePrompt}
+                            </p>
+                          </div>
+                        )}
 
                         <div className="flex items-center gap-2 text-[11px] text-slate-700 font-medium">
                           <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />

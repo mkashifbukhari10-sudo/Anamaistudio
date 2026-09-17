@@ -1,4 +1,17 @@
 import { Type } from "@google/genai";
+import { buildCraftDoctrine, buildSceneCraftRules, storyScale } from "./story-craft.js";
+import { buildRecurringSeriesBlock, type RecurringSeriesBible } from "./recurring-series.js";
+import { buildLedger } from "./continuity-director.js";
+import {
+  buildDialogueRegisterBlock,
+  buildSocialFactsBlock,
+  buildSocialStateBlock,
+  foldSocialDeltas,
+  isEmptyGraph,
+  normalizeSocialDeltas,
+} from "./social-graph.js";
+import { buildWorldFactsBlock, isEmptyRegistry } from "./world-registry.js";
+import type { SocialGraph, SocialStateEntry, WorldRegistry } from "../../types.js";
 
 /**
  * STORY INTELLIGENCE / CINEMATIC DIRECTOR ENGINE
@@ -25,8 +38,36 @@ export interface CastTarget {
   max: number;
 }
 
-/** A meaningful cast sized to the story, never a hardcoded pair. */
-export function targetCastSize(sceneCount: number): CastTarget {
+/**
+ * Normalise the user's cast-size control to an exact count, or undefined.
+ *
+ * 'Auto', absent values and anything unparseable all fall through to undefined,
+ * which restores runtime-based sizing. Accepts a wider integer range than the
+ * UI offers so an API caller is not artificially limited.
+ */
+export function normalizeCharacterCount(raw: unknown): number | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  if (typeof raw === "string" && raw.trim().toLowerCase() === "auto") return undefined;
+
+  const parsed = typeof raw === "number" ? raw : Number(String(raw).trim());
+  if (!Number.isFinite(parsed)) return undefined;
+
+  const rounded = Math.round(parsed);
+  if (rounded < 2 || rounded > 12) return undefined;
+  return rounded;
+}
+
+/**
+ * A meaningful cast sized to the story, never a hardcoded pair.
+ *
+ * An explicit count pins min and max to the same number, which the prompt
+ * builders read as "exactly N". Size only: who those characters are stays
+ * entirely up to the story.
+ */
+export function targetCastSize(sceneCount: number, explicitCount?: number | null): CastTarget {
+  const exact = normalizeCharacterCount(explicitCount);
+  if (exact !== undefined) return { min: exact, max: exact };
+
   if (sceneCount <= 6) return { min: 2, max: 3 };
   if (sceneCount <= 9) return { min: 3, max: 4 };
   if (sceneCount <= 12) return { min: 3, max: 5 };
@@ -110,9 +151,143 @@ export const BLUEPRINT_SCHEMA = {
         required: ["name", "veggieType", "importance", "narrativePurpose", "want", "need", "flaw", "voiceSignature", "arcStart", "arcMidpoint", "arcEnd", "approxDialogueShare"],
       },
     },
+    worldRegistry: {
+      type: Type.OBJECT,
+      description:
+        "The PERSISTENT WORLD: places with fixed identities, and the animals, people, belongings and infrastructure that recur in them. Facts, not scenery - once established they must stay consistent for the whole film. Invent only what THIS story needs. CRITICAL: nothing here is a story character and nothing here consumes the cast size.",
+      properties: {
+        places: {
+          type: Type.ARRAY,
+          description:
+            "Locations with a persistent identity, so they are referenced rather than re-invented each scene. Include only places the story actually visits or refers to.",
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING, description: "Short stable id, lowercase with underscores, e.g. 'courtyard'" },
+              name: { type: Type.STRING, description: "How the story refers to it, e.g. 'the courtyard'" },
+              belongsToHousehold: { type: Type.STRING, description: "Household id that owns it, if any" },
+              fixedFeatures: {
+                type: Type.ARRAY,
+                description:
+                  "Things ALWAYS true of this place that must never change between scenes, e.g. 'a neem tree at the north wall, a charpai beneath it'",
+                items: { type: Type.STRING },
+              },
+              connectsTo: { type: Type.ARRAY, description: "Ids of places reachable from here", items: { type: Type.STRING } },
+            },
+            required: ["id", "name", "fixedFeatures"],
+          },
+        },
+        entities: {
+          type: Type.ARRAY,
+          description:
+            "Animals, neighbours, shopkeepers, belongings and infrastructure that recur. NONE of these are story characters and NONE consume the cast size. Include only what the story needs; an empty list is correct for stories with no recurring world objects.",
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING, description: "Short stable id" },
+              kind: { type: Type.STRING, description: "One of: animal, villager, belonging, infrastructure" },
+              name: { type: Type.STRING, description: "Name, only where the story needs one" },
+              tier: {
+                type: Type.STRING,
+                description:
+                  "RECURRING (appears repeatedly and needs continuity) or BACKGROUND (texture only, no continuity burden)",
+              },
+              ownerHouseholdId: { type: Type.STRING, description: "Household that owns it, if any" },
+              homePlaceId: { type: Type.STRING, description: "Place id where it normally is" },
+              caredForBy: { type: Type.STRING, description: "Character responsible for it, if any" },
+              speech: {
+                type: Type.STRING,
+                description:
+                  "ANIMALS ONLY, decided once for the whole world: 'speaking' (talks in words), 'expressive' (no words, but readable in face and body), or 'mute' (an ordinary animal). Choose deliberately - it is a world rule and can never change later.",
+              },
+              storyRelevance: { type: Type.STRING, description: "Why it matters, if it does" },
+            },
+            required: ["id", "kind", "tier"],
+          },
+        },
+      },
+      required: ["places", "entities"],
+    },
+    socialGraph: {
+      type: Type.OBJECT,
+      description:
+        "The IMMUTABLE social facts of this story: who each character is to every other, who lives together, life stages and everyday responsibilities. These are FACTS, not personality templates - a label records WHO someone is to another, never HOW they behave. Invent them from this story's topic and needs; never reuse a default family or a stock arrangement.",
+      properties: {
+        bonds: {
+          type: Type.ARRAY,
+          description:
+            "Directional relationships. State the FORWARD direction for each pair; the reciprocal is derived from 'inverse'. Cover every pair whose relationship matters, INCLUDING stable ones that never change - a parent-child bond is a fact even when it carries no arc.",
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              from: { type: Type.STRING, description: "Character name this bond points FROM" },
+              to: { type: Type.STRING, description: "Character name this bond points TO" },
+              type: {
+                type: Type.STRING,
+                description:
+                  "What 'from' is to 'to', invented for this story: e.g. father, mother, elder sibling, grandparent, cousin, best friend, neighbour, classmate, teacher, shopkeeper they buy from. A LABEL ONLY - it must not imply a temperament.",
+              },
+              inverse: {
+                type: Type.STRING,
+                description:
+                  "What 'to' is to 'from' in return: e.g. 'father' -> 'child', 'teacher' -> 'student'. For symmetric bonds repeat the same word: 'classmate' -> 'classmate'.",
+              },
+              authority: {
+                type: Type.STRING,
+                description:
+                  "Direction of care or responsibility, structural only: 'cares-for' (from is responsible for to), 'peer', or 'defers-to' (to is responsible for from). This is NOT a statement about strictness or warmth.",
+              },
+              sharedHistory: {
+                type: Type.STRING,
+                description: "One line of shared past if the story has one, otherwise omit",
+              },
+            },
+            required: ["from", "to", "type", "inverse"],
+          },
+        },
+        households: {
+          type: Type.ARRAY,
+          description:
+            "Groups who live together, if this story has any. Invent the arrangement the story needs - do not assume any particular family structure. Omit entirely for stories where nobody shares a home.",
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING, description: "Short stable id, e.g. 'household_1'" },
+              name: { type: Type.STRING, description: "How the story refers to it, e.g. 'the house past the tube well'" },
+              memberIds: { type: Type.ARRAY, description: "Character names living here", items: { type: Type.STRING } },
+            },
+            required: ["id", "name", "memberIds"],
+          },
+        },
+        characterSocial: {
+          type: Type.ARRAY,
+          description: "Per-character social attributes. One entry per cast member.",
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              characterId: { type: Type.STRING, description: "Character name" },
+              lifeStage: {
+                type: Type.STRING,
+                description:
+                  "Where they are in life, invented for this story: e.g. 'small child', 'schoolchild', 'young adult', 'parent with grown children', 'elder'. Informs capability and what they are trusted with - NOT temperament.",
+              },
+              householdId: { type: Type.STRING, description: "Household they belong to, if any" },
+              responsibilities: {
+                type: Type.ARRAY,
+                description: "What they are counted on for in everyday life, if the story establishes any",
+                items: { type: Type.STRING },
+              },
+            },
+            required: ["characterId", "lifeStage"],
+          },
+        },
+      },
+      required: ["bonds", "characterSocial"],
+    },
     relationships: {
       type: Type.ARRAY,
-      description: "Pairings that visibly change over the runtime",
+      description:
+        "Relationship ARCS: pairings whose dynamic visibly changes over the runtime. This is the CHANGE layer on top of socialGraph, which holds the fixed facts. A pair may appear in socialGraph only (a stable bond with no arc), or in both.",
       items: {
         type: Type.OBJECT,
         properties: {
@@ -179,7 +354,7 @@ export const BLUEPRINT_SCHEMA = {
       },
     },
   },
-  required: ["logline", "theme", "centralQuestion", "castPlan", "relationships", "beats", "setups", "chapters"],
+  required: ["logline", "theme", "centralQuestion", "castPlan", "socialGraph", "worldRegistry", "relationships", "beats", "setups", "chapters"],
 };
 
 // ---------------------------------------------------------------------------
@@ -194,30 +369,123 @@ export interface BlueprintContext {
   animationStyle: string;
   targetSceneCount: number;
   numChapters: number;
+  /**
+   * Exact cast size when the user pinned one. Undefined means Auto, which
+   * keeps runtime-based sizing. Controls SIZE only.
+   */
+  characterCount?: number;
   lockedCharacters?: any[];
+  /**
+   * OPTIONAL recurring-series mode. Undefined on the normal path, which keeps
+   * generation fully dynamic. Supplied only when a caller is writing an
+   * episode of a series the user has defined.
+   */
+  seriesBible?: RecurringSeriesBible;
+}
+
+/**
+ * The cast-size paragraph.
+ *
+ * With an explicit count the number is a hard requirement, but everything
+ * ABOUT those characters stays invented. The anti-filler line matters most
+ * here: a pinned cast must not become a reason to pad the story with
+ * characters who have nothing to do.
+ */
+function buildCastSizeDirective(cast: CastTarget, exactCast: number | undefined, sceneCount: number): string {
+  if (exactCast === undefined) {
+    return `- This runtime (${sceneCount} scenes) needs ${cast.min} to ${cast.max} characters. Decide the exact number from what THIS story requires.
+- NEVER default to two characters. A duo is only correct if the story is genuinely about exactly two people.`;
+  }
+
+  return `- EXACT CAST SIZE: this story must contain EXACTLY ${exactCast} characters. Not ${exactCast - 1}, not ${exactCast + 1}. The user set this deliberately and it is a hard requirement.
+- The number is fixed; WHO they are is not. Invent all ${exactCast} characters from this topic, duration, language and mode, exactly as you would otherwise.
+- Give every one of the ${exactCast} a real function: a distinct role in the plot, a relationship with at least one other character, and participation that matters to the outcome.
+- PARTICIPATION IS NOT EQUAL SCREEN TIME. A cast of ${exactCast} will naturally have leads and smaller parts, and that is correct. Weight presence by what the story needs, never by fairness.
+- DO NOT invent filler dialogue or filler action to give everyone a turn. A character who speaks only twice but changes the outcome is doing their job; a character padded with lines to fill a quota is damaging the film.
+- If a character has nothing to do, that is a signal to give them a real dramatic purpose - a competing want, a secret, a relationship that shifts - never to invent filler scenes for them.
+- If ${exactCast} characters is more than this ${sceneCount}-scene runtime can develop deeply, keep the PLOT simple and let some characters carry a single clear function each. Simplify the story, never drop a character.`;
 }
 
 export function buildBlueprintSystemInstruction(ctx: BlueprintContext): string {
-  const cast = targetCastSize(ctx.targetSceneCount);
+  const exactCast = normalizeCharacterCount(ctx.characterCount);
+  const cast = targetCastSize(ctx.targetSceneCount, ctx.characterCount);
+  const castSizeDirective = buildCastSizeDirective(cast, exactCast, ctx.targetSceneCount);
   const beats = targetBeatCount(ctx.targetSceneCount);
 
-  return `You are a master animation story architect - the story department that works BEFORE any shot is planned. You are writing the structural blueprint for a ${ctx.duration} animated children's film ("${ctx.storyMode}" mode) told with anthropomorphic vegetable characters.
+  // Recurring-series mode is opt-in and caller-supplied. With no bible passed
+  // — the normal path — nothing is prepended and generation is fully dynamic.
+  const seriesBlock = ctx.seriesBible ? `${buildRecurringSeriesBlock(ctx.seriesBible)}\n\n` : "";
+
+  return `${seriesBlock}${buildCraftDoctrine({
+    storyMode: ctx.storyMode,
+    targetSceneCount: ctx.targetSceneCount,
+    duration: ctx.duration,
+    language: ctx.language,
+  })}
+
+You are a master animation story architect - the story department that works BEFORE any shot is planned. You are writing the structural blueprint for a ${ctx.duration} animated children's film ("${ctx.storyMode}" mode) told with anthropomorphic vegetable characters.
+
+You are NOT writing scenes. You are deciding what the story IS, who it needs, and why each moment causes the next. Invent the world, the cast and the shape this particular topic requires.
 
 You are NOT writing scenes. You are deciding what the story IS, who it needs, and why each moment causes the next.
 
 ==================================================
-1. CAST - SIZED BY THE STORY, NEVER BY DEFAULT
+1. CAST - ${exactCast ? "SIZE SET BY THE USER" : "SIZED BY THE STORY, NEVER BY DEFAULT"}
 ==================================================
-- This runtime (${ctx.targetSceneCount} scenes) needs ${cast.min} to ${cast.max} characters.
-- NEVER default to two characters. A duo is only correct if the story is genuinely about exactly two people.
+${castSizeDirective}
 - Every character must answer: "what collapses if I remove them?" Delete anyone who is decoration.
 - Classify each as MAIN (drives the spine), SUPPORTING (changes the outcome at least once) or MINOR (colours the world, appears in a handful of scenes).
 - Give every MAIN and SUPPORTING character a WANT (external, visible, actable) and a NEED (the internal truth they resist), plus a FLAW that will directly cause the setback later.
-- Give every character a VOICE SIGNATURE: how their lines are recognisable with the name removed - vocabulary, sentence length, rhythm, a verbal habit. Two characters must never be interchangeable.
+- FILMABLE TEST on every want: if you cannot photograph it, it is a theme, not a want. Rewrite it until it is a concrete, visible objective with something at stake.
+- Give every character a VOICE SIGNATURE: a MECHANICAL rule invented for this character - sentence length, a syntax habit, what they do with questions, a construction they repeat, something they never say. Not an adjective: "optimistic" and "anxious" produce identical dialogue, while "never finishes a sentence" produces distinguishable dialogue. Derive it from who this character is in THIS story.
+- Two characters must never be interchangeable. With the names removed, a reader must still know who is speaking.
 - Assign each an approximate dialogue share. MAIN characters do not have to split lines evenly, but no character with speaking presence may be silent for the whole middle of the film.
 
 ==================================================
-2. RELATIONSHIPS THAT EVOLVE
+1b. THE WORLD - PLACES AND WHAT LIVES IN THEM
+==================================================
+Fill 'worldRegistry' with the persistent world THIS story needs. Invent it from the topic; never reuse a default setting, layout, animal or culture.
+
+THREE TIERS, AND THEY ARE NOT INTERCHANGEABLE:
+  A. STORY CAST ('castPlan') - has a WANT and an ARC. These are the only entries that count toward the cast size above.
+  B. RECURRING ENTITIES ('worldRegistry.entities', tier RECURRING) - a household animal, a shopkeeper, a school bell, a cart. Appears repeatedly, needs continuity, has NO dramatic arc. Does NOT count toward cast size and gets no character design.
+  C. BACKGROUND ('worldRegistry.entities', tier BACKGROUND) - people at the well, birds, passing traffic. Texture only. Does NOT count and gets no design.
+
+- THE RULE: if it has a want and an arc it is a CHARACTER; otherwise it is an ENTITY. Never pad 'castPlan' with animals or bystanders, and never quietly promote a talking entity into the cast.
+- If an animal or a neighbour genuinely IS a protagonist of this story - it carries a want and changes - then put it in 'castPlan' deliberately, and it DOES count toward the cast size. That is a decision, not an accident.
+- PLACES: give every location the story actually uses an id and its 'fixedFeatures' - the things always true of it. Scenes reference the id instead of re-describing the place, which is what stops the same room drifting across the film.
+- ANIMALS: decide 'speech' ONCE - speaking, expressive, or an ordinary mute animal. It is a rule of this world and can never change later. Do not default to talking animals; most village animals are not.
+- OWNERSHIP AND HOME: say which household owns an animal or belonging, where it normally is, and who cares for it. These are facts that later scenes must respect.
+- Only register what the story needs. A two-hander in a single room needs one place and no entities. An empty 'entities' list is correct far more often than a long one.
+- SIZE TO THE RUNTIME (${ctx.targetSceneCount} scenes): ${
+    ctx.targetSceneCount < 8
+      ? "at this length, ONE place and almost certainly NO entities. Do not build a world you have no room to show."
+      : ctx.targetSceneCount < 24
+      ? "at this length, one or two places and at most a couple of entities."
+      : ctx.targetSceneCount < 48
+      ? "at this length, a handful of places and the entities the story actually returns to."
+      : "at this length a fuller world is worth establishing - recurring places, household animals, neighbours - but every entry must still appear in the film."
+  }
+
+==================================================
+2a. SOCIAL FACTS - WHO EVERYONE IS TO EACH OTHER
+==================================================
+- Fill 'socialGraph' with the FIXED social truth of this story, separate from any arc.
+- Cover EVERY pair whose relationship matters, INCLUDING stable ones that never change. A parent-child bond is a fact even when it carries no arc; leaving it out is how a parent silently becomes a friend later.
+- State each bond in ONE direction with its 'inverse'. The reciprocal is completed automatically and must agree.
+- Invent the arrangement THIS story needs. Do not assume a family story, and do not assume any particular family structure when there is one. Two strangers, three classmates, a shopkeeper and a regular customer are all valid social graphs.
+- A RELATIONSHIP LABEL IS A FACT, NOT A PERSONALITY TEMPLATE. It records who someone IS to another, never how they behave. Do NOT write a strict father, a nurturing mother, a wise elder, a stern teacher or a naive child because of a label. Their behaviour comes from the want, need, flaw, strength, life stage and situation you design for them individually - the same as any other character.
+- Give every cast member a 'lifeStage'. It informs what they can reach, carry, understand and are trusted with. It does NOT make anyone childish, wise or authoritative by default.
+- Add 'responsibilities' only where the story establishes them. These are everyday duties, and they are a rich source of ordinary conflict and affection.
+- Only create households if people in this story actually live together. Omit them otherwise.
+- SIZE TO THE RUNTIME (${ctx.targetSceneCount} scenes): ${
+    ctx.targetSceneCount < 8
+      ? "at this length record only the bonds between characters who actually share a scene, and skip households entirely unless the story is about a home."
+      : "record every bond that matters, including stable ones, plus households where people share a home."
+  }
+
+==================================================
+2b. RELATIONSHIPS THAT EVOLVE
 ==================================================
 - Define the pairings that carry the emotional load.
 - Each must have a starting dynamic, a genuine source of friction, a beat where it turns, and a different ending dynamic.
@@ -239,6 +507,10 @@ RULES:
 - The midpoint must genuinely REVERSE something - what the characters believe the problem is, or who they think can solve it. It is not merely "the middle".
 - The emotional low point must be caused by a MAIN character's flaw, not by bad luck or a random villain.
 - No random twists. Any surprise must be inevitable in hindsight because it was planted earlier.
+- ESCALATING ATTEMPTS: where the runtime and the mode support it (see the scale and mode guidance above), structure the middle as escalating attempts at the want - each failing differently and costing more than the last. Do NOT force a fixed number of attempts onto a runtime too short to carry them, or onto a mode that escalates by revelation or by repetition instead.
+- Whichever beat resolves the story must COST something: a resource, a relationship, a belief, or an admission the character resisted making. A win that costs nothing plays flat.
+- ENDING: decide whether this story is stronger granting the want or denying it while delivering the need. Both are legitimate; choose deliberately and say which in the beat's purpose.
+- Prefer a final beat whose meaning lands in an IMAGE or an ACTION over one that lands in a line of dialogue. A character explaining what they learned is almost always weaker than a character simply acting differently.
 
 ==================================================
 4. FORESHADOWING AND MEANINGFUL PROPS
@@ -259,7 +531,8 @@ LANGUAGE: Story-facing text (beat names, chapter titles, logline) in ${ctx.langu
 }
 
 export function buildBlueprintPrompt(ctx: BlueprintContext): string {
-  const cast = targetCastSize(ctx.targetSceneCount);
+  const exactCast = normalizeCharacterCount(ctx.characterCount);
+  const cast = targetCastSize(ctx.targetSceneCount, ctx.characterCount);
   const beats = targetBeatCount(ctx.targetSceneCount);
 
   let prompt = `Design the complete narrative blueprint.
@@ -269,7 +542,7 @@ export function buildBlueprintPrompt(ctx: BlueprintContext): string {
 - Runtime: ${ctx.duration} = exactly ${ctx.targetSceneCount} scenes of 10 seconds each
 - Chapters: ${ctx.numChapters}
 - Beat budget: about ${beats} beats (use fewer if the story is complete without them)
-- Cast: ${cast.min}-${cast.max} characters, each dramatically necessary
+- Cast: ${exactCast !== undefined ? `EXACTLY ${exactCast} characters (user-selected), each given a real dramatic function` : `${cast.min}-${cast.max} characters, each dramatically necessary`}
 - Language: ${ctx.language}
 - Animation Style: ${ctx.animationStyle}
 
@@ -277,9 +550,16 @@ Beat scene ranges must tile scenes 1 to ${ctx.targetSceneCount} with no gaps and
 Setups must reference scene numbers inside 1 to ${ctx.targetSceneCount}.
 `;
 
+  // Opt-in only: a caller may pin characters (a continuing series, a user's
+  // saved cast, a regeneration). With none supplied the cast is invented.
   if (ctx.lockedCharacters && ctx.lockedCharacters.length > 0) {
-    prompt += `\nLOCKED CHARACTERS - these must appear in the cast with these exact names and vegetable types. Build their goals, flaws and arcs around the existing identities:\n${JSON.stringify(
-      ctx.lockedCharacters.map((c: any) => ({ name: c.name, veggieType: c.veggieType, role: c.role })),
+    prompt += `\nLOCKED CHARACTERS - these must appear in the cast with these exact names and types. Build their goals, flaws and arcs around the existing identities:\n${JSON.stringify(
+      ctx.lockedCharacters.map((c: any) => ({
+        name: c.name,
+        veggieType: c.veggieType,
+        role: c.role,
+        voiceRule: c.speakingStyle || c.personality || undefined,
+      })),
       null,
       2
     )}\n`;
@@ -297,6 +577,10 @@ export interface BlueprintSlice {
   theme: string;
   centralQuestion: string;
   castPlan: any[];
+  /** Immutable social facts, carried into every batch so bonds cannot drift. */
+  socialGraph: SocialGraph | null;
+  /** Persistent places and entities, carried whole for the same reason. */
+  worldRegistry: WorldRegistry | null;
   relationships: any[];
   activeBeats: any[];
   previousBeat: any | null;
@@ -340,6 +624,10 @@ export function sliceBlueprintForRange(blueprint: any, startScene: number, endSc
     theme: blueprint.theme || "",
     centralQuestion: blueprint.centralQuestion || "",
     castPlan: Array.isArray(blueprint.castPlan) ? blueprint.castPlan : [],
+    // Facts are never sliced by scene range: every batch gets the whole graph,
+    // which is precisely what stops a relationship being reinterpreted later.
+    socialGraph: blueprint.socialGraph ?? null,
+    worldRegistry: blueprint.worldRegistry ?? null,
     relationships: Array.isArray(blueprint.relationships) ? blueprint.relationships : [],
     activeBeats,
     previousBeat: firstActiveIdx > 0 ? sorted[firstActiveIdx - 1] : null,
@@ -363,6 +651,11 @@ export interface StoryMemory {
   activeProps: string;
   openSetups: any[];
   emotionalTrajectory: string[];
+  /**
+   * Where relationships currently stand, folded from every delta so far.
+   * Latest value per pair-and-dimension, never the full history.
+   */
+  socialState: SocialStateEntry[];
 }
 
 function truncate(value: any, max: number): string {
@@ -376,6 +669,21 @@ function truncate(value: any, max: number): string {
  * twelve-scene episodes: each batch sees the whole story so far, not just the
  * previous shot's end state.
  */
+/**
+ * Every object the film is currently tracking - held and set down - folded
+ * across all scenes so far. Falls back to the last scene's prop line when no
+ * structured state is available.
+ */
+function describeLedgerProps(scenesSoFar: any[]): string {
+  const ledger = buildLedger(scenesSoFar || []);
+  const held = [...ledger.characters.values()]
+    .filter((c) => c.holding)
+    .map((c) => `${c.name} holds ${c.holding}`);
+  const placed = [...ledger.placedProps];
+  const parts = [...held, ...placed.map((p) => `set down: ${p}`)];
+  return parts.length > 0 ? truncate(parts.join("; "), 400) : "";
+}
+
 export function buildStoryMemory(scenesSoFar: any[], blueprint: any): StoryMemory | null {
   if (!Array.isArray(scenesSoFar) || scenesSoFar.length === 0) return null;
 
@@ -422,9 +730,14 @@ export function buildStoryMemory(scenesSoFar: any[], blueprint: any): StoryMemor
     beatsCompleted,
     dialogueCounts,
     recentDialogue: allLines.slice(-10),
-    activeProps: truncate(last?.props, 200),
+    // Accumulated across every scene, not just the last one, so an object
+    // introduced early is still tracked when it matters forty scenes later.
+    activeProps: describeLedgerProps(scenesSoFar) || truncate(last?.props, 200),
     openSetups,
     emotionalTrajectory,
+    // Folded, not accumulated: a 60-scene story carries a short current-state
+    // list rather than a growing history of every shift.
+    socialState: foldSocialDeltas(normalizeSocialDeltas(ordered)),
   };
 }
 
@@ -488,8 +801,28 @@ BEAT DISCIPLINE:
 }
 
 /** The blueprint + memory block appended to the scene batch user prompt. */
-export function buildBlueprintPromptBlock(slice: BlueprintSlice | null, memory: StoryMemory | null): string {
+export function buildBlueprintPromptBlock(
+  slice: BlueprintSlice | null,
+  memory: StoryMemory | null,
+  charactersPresent?: string[]
+): string {
   const sections: string[] = [];
+
+  // Social facts lead, before any arc or beat. They are the frame everything
+  // else is read inside, and they are identical in every batch by design.
+  const graph: SocialGraph | null = slice?.socialGraph ?? null;
+  if (graph && !isEmptyGraph(graph)) {
+    sections.push(buildSocialFactsBlock(graph));
+    const register = buildDialogueRegisterBlock(graph, charactersPresent);
+    if (register) sections.push(register);
+  }
+
+  // World facts sit beside social facts: also unsliced, also identical in
+  // every batch, so a place cannot be re-imagined late in the film.
+  const registry: WorldRegistry | null = slice?.worldRegistry ?? null;
+  if (registry && !isEmptyRegistry(registry)) {
+    sections.push(buildWorldFactsBlock(registry));
+  }
 
   if (slice) {
     sections.push(`NARRATIVE BLUEPRINT FOR THIS RANGE
@@ -523,6 +856,8 @@ ${memory.recentDialogue.join("\n")}
 
 EMOTIONAL TRAJECTORY (continue it, do not reset it):
 ${memory.emotionalTrajectory.join("\n")}
+
+${buildSocialStateBlock(memory.socialState)}
 
 PROPS IN PLAY AT SCENE ${memory.lastSceneNumber}: ${memory.activeProps}
 

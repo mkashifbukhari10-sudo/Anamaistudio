@@ -5,8 +5,38 @@ import {
   calculateSceneCount as calculateTargetSceneCount,
   formatSceneTimeRange as formatTimeRange,
   formatTotalDuration,
+  SECONDS_PER_SCENE,
 } from "./src/shared/duration.js";
 import { generateText, generateImage } from "./src/server/ai/index.js";
+import { registerAuthRoutes, requireAuth } from "./src/server/auth/index.js";
+import { buildSceneCraftRules } from "./src/server/story/story-craft.js";
+import {
+  buildSocialContextForBible,
+  buildSocialGraph,
+  isEmptyGraph,
+  summariseSocialGraph,
+} from "./src/server/story/social-graph.js";
+import {
+  buildWorldRegistry,
+  resolvePlaceId,
+  summariseWorldRegistry,
+} from "./src/server/story/world-registry.js";
+import { validateStoryFacts } from "./src/server/story/fact-validator.js";
+import type { WorldRegistry } from "./src/types.js";
+import {
+  buildLedger,
+  buildLedgerBlock,
+  normalizeContinuityState,
+  reconcileHandoffs,
+  summariseContinuity,
+  validateContinuity,
+} from "./src/server/story/continuity-director.js";
+import {
+  VIDEO_NEGATIVE_PROMPT,
+  makeSelfContained,
+  normalizeTransitionType,
+  buildFrameHandoff,
+} from "./src/server/story/prompt-continuity.js";
 import {
   BLUEPRINT_SCHEMA,
   buildBlueprintPrompt,
@@ -18,9 +48,31 @@ import {
   sliceBlueprintForRange,
   targetBeatCount,
   targetCastSize,
+  normalizeCharacterCount,
 } from "./src/server/story/blueprint.js";
 
 dotenv.config();
+
+/**
+ * Keep 'role' meaning "dramatic function" rather than "screen-time tier".
+ *
+ * The model sometimes echoes MAIN / SUPPORTING / MINOR into 'role', which
+ * duplicates 'importance' and tells the scene department nothing. The
+ * blueprint's narrativePurpose carries the same idea written usefully, so it is
+ * the fallback. Detection is structural - a bare tier word, nothing else - so
+ * it never rejects a genuine description that happens to contain the word.
+ */
+function resolveDramaticRole(role: unknown, narrativePurpose?: unknown): string {
+  const text = String(role ?? "").trim();
+  const isBareTier = /^(main|supporting|minor)(\s+character)?$/i.test(text);
+
+  if (text && !isBareTier) return text;
+
+  const purpose = String(narrativePurpose ?? "").trim();
+  if (purpose) return purpose;
+
+  return text || "Role in the story";
+}
 
 // Partition any target scene count into balanced batches of max 12 scenes
 function partitionSceneRanges(totalScenes: number, maxChunkSize: number = 12): Array<{ start: number; end: number }> {
@@ -98,7 +150,8 @@ const SCENE_PROPERTIES = {
   beatName: { type: Type.STRING, description: "Blueprint beat name this scene serves" },
   storyFunction: {
     type: Type.STRING,
-    description: "What materially CHANGES in this scene - a fact learned, relationship shifted, decision made, resource lost or gained. If nothing changes the scene is filler and must be rewritten.",
+    description:
+      "What this scene ACHIEVES. At least one of: a fact learned; a relationship shifted; a decision taken; a resource gained or lost; a character revealed; what is normal here established; a setup planted or paid off; an emotion changed; a responsibility established; anticipation built. A quiet everyday scene qualifies easily on this list. A scene that achieves NONE of them is filler - depicting something merely because it is realistic does not count - and must be rewritten.",
   },
   setupOrPayoff: { type: Type.STRING, description: "Foreshadowing planted or paid off here, or 'None'" },
   chapterTitle: { type: Type.STRING, description: "Associated chapter title" },
@@ -110,7 +163,7 @@ const SCENE_PROPERTIES = {
   },
   characterActions: { type: Type.STRING, description: "Exactly ONE primary visual action in this 10-second shot" },
   facialExpressions: { type: Type.STRING, description: "Eye and mouth expressions and emotional state carrying forward" },
-  dialogue: { type: Type.STRING, description: "Multi-character spoken conversation formatted with speaker names, e.g. Gajar: \"...\" \\n Tamatar: \"...\" in target language, or 'None / Visual Action'" },
+  dialogue: { type: Type.STRING, description: "Multi-character spoken conversation formatted with speaker names, e.g. <Character A>: \"...\" \\n <Character B>: \"...\" in target language, or 'None / Visual Action'" },
   dialogueTurns: {
     type: Type.ARRAY,
     description: "Multi-character dialogue turns with speaker, line, facialExpression, and accompanyingAction",
@@ -140,7 +193,87 @@ const SCENE_PROPERTIES = {
   startState: { type: Type.STRING, description: "Exact visual starting state inheriting Scene N-1 endState (positions, poses, held props, lighting)" },
   endState: { type: Type.STRING, description: "Exact visual ending state at 10.0s (positions, held props, open/closed doors, expressions)" },
   nextSceneHandoff: { type: Type.STRING, description: "Specific visual & physical handoff contract that MUST be inherited by Scene N+1" },
-  finalVideoPrompt: { type: Type.STRING, description: "Complete production prompt in English for Google Flow/Veo starting with CONTINUE DIRECTLY FROM PREVIOUS SHOT (or Opening) with explicit continuity negative constraints" },
+  continuityState: {
+    type: Type.OBJECT,
+    description:
+      "STRUCTURED snapshot of this scene's FINAL FRAME. This is the fact Scene N+1 inherits, so it must describe the situation exactly as it stands when the shot ends - not a summary of the scene.",
+    properties: {
+      characters: {
+        type: Type.ARRAY,
+        description: "Every character on screen at the final frame.",
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            name: { type: Type.STRING, description: "Character name" },
+            position: { type: Type.STRING, description: "Screen position at the final frame, e.g. 'frame left, mid-ground'" },
+            pose: { type: Type.STRING, description: "Body pose and what they are physically doing at the final frame" },
+            emotion: { type: Type.STRING, description: "Facial emotion at the final frame" },
+            holding: { type: Type.STRING, description: "Object held and in which hand, or 'nothing'" },
+          },
+          required: ["name", "position", "pose", "emotion", "holding"],
+        },
+      },
+      placedProps: {
+        type: Type.ARRAY,
+        description: "Objects resting in the world at the final frame (not held), with where they are.",
+        items: { type: Type.STRING },
+      },
+      openClosedObjects: {
+        type: Type.ARRAY,
+        description: "State of anything that opens or closes, each as 'name: state', e.g. 'gate: open'.",
+        items: { type: Type.STRING },
+      },
+      placeId: {
+        type: Type.STRING,
+        description:
+          "The registered place id from the World Registry where this scene happens, e.g. 'courtyard'. Use the SAME id every time the story returns to that place, and keep its fixed features true. Leave empty only for a location the registry does not contain.",
+      },
+      location: { type: Type.STRING, description: "Exact location at the final frame" },
+      timeOfDay: { type: Type.STRING, description: "Time of day at the final frame. Must move forward across the film." },
+      weather: { type: Type.STRING, description: "Weather at the final frame" },
+      lighting: { type: Type.STRING, description: "Lighting direction, colour temperature and intensity at the final frame" },
+      environmentState: { type: Type.STRING, description: "Anything changed about the environment that later scenes must respect" },
+      camera: {
+        type: Type.OBJECT,
+        description: "Where the camera is and what it is doing as the shot ends.",
+        properties: {
+          shotSize: { type: Type.STRING, description: "e.g. wide, medium, close-up" },
+          angle: { type: Type.STRING, description: "e.g. eye level, low angle" },
+          movement: { type: Type.STRING, description: "Camera movement at the end of the shot, or 'static'" },
+          stillMovingAtCut: { type: Type.BOOLEAN, description: "True if the camera is still in motion as the scene ends" },
+          screenDirection: { type: Type.STRING, description: "Direction the action reads across frame, e.g. 'left-to-right'" },
+        },
+        required: ["shotSize", "angle", "movement", "stillMovingAtCut", "screenDirection"],
+      },
+    },
+    required: ["characters", "placedProps", "location", "timeOfDay", "lighting", "camera"],
+  },
+  socialChanges: {
+    type: Type.ARRAY,
+    description:
+      "ONLY when a relationship's STATE genuinely changed in this scene: trust gained or lost, tension raised or eased, a promise made, kept or broken, a disagreement opened or settled, a responsibility handed over, something learned about each other. MOST SCENES CHANGE NOTHING - leave this empty rather than inventing a change. NEVER use this to alter WHO people are to each other: relationship facts are fixed and cannot be changed by a scene.",
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        characterA: { type: Type.STRING },
+        characterB: { type: Type.STRING },
+        dimension: {
+          type: Type.STRING,
+          description: "What shifted, named for this story: e.g. trust, tension, closeness, a promise, an unresolved disagreement",
+        },
+        change: { type: Type.STRING, description: "What it is now, in one line" },
+      },
+      required: ["characterA", "characterB", "dimension", "change"],
+    },
+  },
+  transitionType: {
+    type: Type.STRING,
+    description: "CHAIN if the action flows unbroken from the previous scene (same location, same continuous motion, no time jump) and the join must be invisible; CUT if this scene changes location, angle or time. Most scenes are CUT. Scene 1 is always CUT.",
+  },
+  finalVideoPrompt: {
+    type: Type.STRING,
+    description: "Self-contained English prompt for Google Flow/Veo. Opens by describing the exact first frame in absolute terms (each character's screen position, pose, held props, eyeline, expression) - NEVER by referring to another scene. Positive description only, no negation words.",
+  },
 };
 
 const REQUIRED_SCENE_FIELDS = [
@@ -169,6 +302,8 @@ const REQUIRED_SCENE_FIELDS = [
   "startState",
   "endState",
   "nextSceneHandoff",
+  "continuityState",
+  "transitionType",
   "finalVideoPrompt",
 ];
 
@@ -201,6 +336,8 @@ async function generateScenesBatch(
     } | null;
     blueprint?: any;
     storyMemory?: any;
+    /** Accumulated world state from every scene generated so far. */
+    ledger?: any;
   }
 ): Promise<any[]> {
   const {
@@ -219,6 +356,7 @@ async function generateScenesBatch(
     previousSceneContext,
     blueprint,
     storyMemory,
+    ledger,
   } = params;
 
   // Story-first: the beats this range must dramatise, plus the beat either
@@ -238,10 +376,19 @@ CORE PHILOSOPHY — ONE CONTINUOUS ANIMATED FILM, NOT DISCONNECTED CLIPS:
 You are NOT producing independent AI video clips. You are planning consecutive shots of ONE UNIFIED, CONTINUOUS CINEMATIC FILM.
 
 MANDATORY CONTINUITY & SHOT-TO-SHOT LAWS:
-1. SHOT-TO-SHOT HANDOFF:
-   - For Scene 1: Establish the opening positions, physical poses, held props, environment, and lighting.
-   - For Scene N (N > 1): Scene N's 'startState' MUST BE IDENTICAL to Scene N-1's 'endState'.
-   - The action occurring at 10.0 seconds of Scene N-1 MUST continue fluidly at 0.0 seconds of Scene N.
+1. SHOT-TO-SHOT HANDOFF - THE CORE LAW:
+   - Every scene MUST emit 'continuityState': a STRUCTURED snapshot of its FINAL FRAME. Not a summary of the scene - the exact situation as the shot ends: each character's screen position, body pose, facial emotion and what they hold; objects resting in the world; anything open or closed; location, time of day, weather, lighting; and where the camera is and what it is doing.
+   - For Scene 1: establish the opening positions, poses, held props, environment, lighting and camera.
+   - For Scene N (N > 1): Scene N's 'startState' MUST BE IDENTICAL to Scene N-1's 'endState', and Scene N's opening situation MUST match Scene N-1's 'continuityState' character for character, prop for prop.
+   - CONSUME the previous state; do NOT re-imagine the situation. If the previous scene ended with someone crouched at frame left holding a lantern, this scene OPENS with them crouched at frame left holding that lantern.
+   - The action occurring at the last second of Scene N-1 MUST continue fluidly at 0.0 seconds of Scene N.
+   - Think strictly: START STATE -> ACTION/CHANGE -> END STATE -> NEXT SCENE HANDOFF. The end state is a fact the next scene inherits, never a suggestion.
+1b. CAMERA AND TIME CONTINUITY:
+   - Every camera change must be MOTIVATED by the action. Never change framing merely to vary it.
+   - SCREEN DIRECTION: hold the line. If the action reads left-to-right it keeps reading left-to-right; crossing it mid-action disorients the viewer and is only allowed when the scene shows the camera crossing.
+   - If the camera is STILL MOVING as a scene ends ('stillMovingAtCut'), the next scene either continues that movement or settles it. Motion must not stop dead at the seam.
+   - Do NOT use the same shot size and movement for more than two consecutive scenes. Vary framing so the sequence reads as directed.
+   - TIME moves FORWARD across the film and never backwards, unless the story explicitly declares a flashback. Lighting must follow the time of day consistently.
 2. STRICT NO-RESET RULE:
    - NEVER automatically reset character pose, screen position (left/right/center), held props, emotions, environment, weather, lighting, or camera direction.
    - If a character begins walking to the right, they DO NOT suddenly appear on the left in the next shot unless an explicit camera reverse shot is motivated.
@@ -251,14 +398,17 @@ MANDATORY CONTINUITY & SHOT-TO-SHOT LAWS:
 4. EMOTIONAL CONTINUITY:
    - Emotions (fear, curiosity, relief, laughter, tears) persist across shots. They never reset to a generic neutral smile without a clear narrative trigger.
 5. NATURAL MULTI-CHARACTER CONVERSATIONAL INTELLIGENCE:
-   - When 2 or more characters are present, distribute dialogue naturally with speaker prefixes (e.g. "Gajar: \\"...\\" \\n Tamatar: \\"...\\"").
+   - When 2 or more characters are present, distribute dialogue naturally with speaker prefixes (e.g. "<Character A>: \\"...\\" \\n <Character B>: \\"...\\"").
    - Characters must talk TO each other: asking questions, answering, reacting emotionally, giving suggestions, and expressing care.
+${buildSceneCraftRules({ storyMode, targetSceneCount: totalScenes, duration, language, includesFinalScene: endScene >= totalScenes })}
    - Synchronize physical movement with speech: each character's line matches what they are physically doing and their facial expressions. Populate 'dialogueTurns'.
-6. GOOGLE FLOW / VEO VIDEO PROMPT REQUIREMENTS:
-   - For Scene 1: Begin with "OPENING ESTABLISHING SHOT:".
-   - For Scene N (N > 1): MUST BEGIN WITH "CONTINUE DIRECTLY FROM PREVIOUS SHOT [Scene ${startScene > 1 ? "N-1" : "..."}]: [Detail exact starting poses, character screen positions, and held props]...".
-   - Include character visual details from Character Bible, motivated camera movement, lighting, synchronized dialogue in ${language}, Foley sound effects, and exact ending posture.
-   - ALWAYS conclude with continuity negative constraints: "Avoid: character teleportation, sudden wardrobe or color changes, vanishing props, pose resets, emotional resets, reversed screen direction, unmotivated cuts."`
+6. GOOGLE FLOW / VEO VIDEO PROMPT REQUIREMENTS (SELF-CONTAINED - CRITICAL):
+   - Each 'finalVideoPrompt' is pasted into Google Flow / Veo ON ITS OWN. The model has NO memory of any other scene and CANNOT see the previous shot. NEVER write "continue from previous shot", "same as before", "as established", "inherit", "unchanged", or any reference to another scene number. Such references are silently ignored and waste the prompt.
+   - OPEN every prompt by describing the exact FIRST FRAME in ABSOLUTE terms: each character's screen position (frame left / centre / frame right), body pose, what each hand is holding, head direction and eyeline, and facial expression. For Scene N > 1 this opening description MUST restate the previous scene's 'endState' IN FULL, spelled out as fresh description - never as a reference.
+   - Then describe ONE continuous ${SECONDS_PER_SCENE}-second action, motivated camera movement, lighting direction and colour temperature, synchronized dialogue in ${language}, Foley sound effects, and the exact CLOSING frame.
+   - Restate the full locked visual description of EVERY character present, word-for-word from the Character Bible, in EVERY prompt. This repetition is required, not redundant - it is the only thing holding character identity stable across independent generations.
+   - Write ONLY positive description. NEVER use "avoid", "no", "without", "not", or any other negation - negative constraints are delivered separately in a dedicated field and negation in a positive prompt tends to summon what it names.
+   - Set 'transitionType' to "CHAIN" only when the action flows unbroken from the previous scene (same location, same continuous motion, no time jump) and the join must be invisible. Set "CUT" when the scene changes location, camera angle or time. Most scenes are CUT; Scene 1 is always CUT.`
     + buildStoryIntelligenceDirectives({
       startScene,
       endScene,
@@ -284,6 +434,12 @@ YOUR SCENE #${startScene} START STATE MUST EXACTLY INHERIT AND CONTINUE FROM THI
 `;
   }
 
+  // The accumulated world: what is true right now, not merely what happened.
+  const ledgerBlock = ledger ? buildLedgerBlock(ledger) : "";
+  if (ledgerBlock) {
+    continuityContextPrompt += `\n${ledgerBlock}\n`;
+  }
+
   const prompt = `Generate sequential 10-second shots for Scene ${startScene} to Scene ${endScene} (covering ${startTime} to ${endTime} of the ${totalScenes}-scene (${duration}) timeline).
 
 STORY TITLE: ${title}
@@ -300,7 +456,7 @@ ${JSON.stringify(chapters || [], null, 2)}
 
 MASTER CHARACTER BIBLE (STRICT VISUAL IDENTITIES):
 ${JSON.stringify(characters || [], null, 2)}
-${buildBlueprintPromptBlock(blueprintSlice, storyMemory || null)}
+${buildBlueprintPromptBlock(blueprintSlice, storyMemory || null, (characters || []).map((c: any) => c?.name).filter(Boolean))}
 
 Ensure every scene contains complete 'startState', 'endState', 'nextSceneHandoff', multi-character dialogue in ${language} with 'dialogueTurns', and production Google Flow / Veo prompts.
 Generate exactly ${count} scenes numbered ${startScene} to ${endScene}.`;
@@ -442,6 +598,8 @@ async function runSceneBatchPipeline(params: {
         blueprint: params.blueprint,
         // Long-term memory of every scene so far, not just the previous shot.
         storyMemory: buildStoryMemory(scenes, params.blueprint),
+        // Accumulated world state: where everyone is, what they hold, what is open.
+        ledger: buildLedger(scenes),
       });
       scenes.push(...batchScenes);
     } catch (err: any) {
@@ -512,125 +670,6 @@ function buildSceneGenerationReport(
 // ==========================================
 // AUTOMATED 10-DIMENSION CONTINUITY VALIDATOR
 // ==========================================
-function validateSceneContinuity(scenes: any[], characters: any[]): void {
-  if (!scenes || scenes.length <= 1) return;
-
-  for (let i = 1; i < scenes.length; i++) {
-    const prev = scenes[i - 1];
-    const curr = scenes[i];
-    const issues: any[] = [];
-
-    // 1. Character Continuity Check
-    const prevChars = new Set<string>((prev.charactersPresent || []).map((c: string) => c.toLowerCase()));
-    const currChars = new Set<string>((curr.charactersPresent || []).map((c: string) => c.toLowerCase()));
-
-    // Check vanished characters without exit
-    prevChars.forEach((charName) => {
-      if (!currChars.has(charName)) {
-        const exitMentioned =
-          (prev.characterActions || "").toLowerCase().includes("exit") ||
-          (prev.characterActions || "").toLowerCase().includes("leave") ||
-          (prev.characterActions || "").toLowerCase().includes("walks away") ||
-          (curr.characterActions || "").toLowerCase().includes("off-screen") ||
-          (curr.characterActions || "").toLowerCase().includes("alone");
-        if (!exitMentioned && prev.charactersPresent.length > 1) {
-          issues.push({
-            sceneNumber: curr.sceneNumber,
-            dimension: "character",
-            title: `Character Presence Discontinuity (${charName})`,
-            previousState: `Scene ${prev.sceneNumber}: ${charName} was present on screen.`,
-            currentState: `Scene ${curr.sceneNumber}: ${charName} is omitted without an on-screen exit.`,
-            suggestedFix: `Either include ${charName} in the background/group or add an explicit exit action in Scene ${prev.sceneNumber}.`,
-            severity: "info",
-          });
-        }
-      }
-    });
-
-    // 2. Prop Continuity Check (held props persistence)
-    const keyProps = ["basket", "umbrella", "lantern", "key", "watering can", "map", "towel", "book", "bag", "flower", "stick"];
-    keyProps.forEach((propKeyword) => {
-      const prevHasProp = (prev.props || "").toLowerCase().includes(propKeyword) || (prev.endState || "").toLowerCase().includes(propKeyword);
-      const currHasProp = (curr.props || "").toLowerCase().includes(propKeyword) || (curr.startState || "").toLowerCase().includes(propKeyword);
-      const propDropped = (prev.endState || "").toLowerCase().includes("places") || (prev.endState || "").toLowerCase().includes("drops") || (curr.characterActions || "").toLowerCase().includes("puts down");
-
-      if (prevHasProp && !currHasProp && !propDropped) {
-        issues.push({
-          sceneNumber: curr.sceneNumber,
-          dimension: "prop",
-          title: `Prop Discontinuity (${propKeyword})`,
-          previousState: `Scene ${prev.sceneNumber}: "${propKeyword}" was in active use or held at the end of the shot.`,
-          currentState: `Scene ${curr.sceneNumber}: "${propKeyword}" is not listed in starting state or active props.`,
-          suggestedFix: `Specify that the character continues holding the ${propKeyword} or explicitly show them placing it down.`,
-          severity: "warning",
-        });
-      }
-    });
-
-    // 3. Location Continuity Check
-    const prevLoc = (prev.environment || "").toLowerCase();
-    const currLoc = (curr.environment || "").toLowerCase();
-    const isDramaticJump =
-      (prevLoc.includes("garden") && currLoc.includes("kitchen")) ||
-      (prevLoc.includes("outdoor") && currLoc.includes("inside bedroom")) ||
-      (prevLoc.includes("farm") && currLoc.includes("castle"));
-
-    if (isDramaticJump) {
-      const transitionMentioned = (prev.endState || "").toLowerCase().includes("enter") || (curr.startState || "").toLowerCase().includes("arrive") || (curr.characterActions || "").toLowerCase().includes("walked into");
-      if (!transitionMentioned) {
-        issues.push({
-          sceneNumber: curr.sceneNumber,
-          dimension: "location",
-          title: "Sudden Location Jump without Staged Transition",
-          previousState: `Scene ${prev.sceneNumber}: ${prev.environment}`,
-          currentState: `Scene ${curr.sceneNumber}: ${curr.environment}`,
-          suggestedFix: `Show the character walking through the doorway or arriving at the new location to bridge the scene transition.`,
-          severity: "warning",
-        });
-      }
-    }
-
-    // 4. Action & Handoff Continuity Check
-    if (curr.startState && prev.endState) {
-      const hasOverlap = curr.startState.toLowerCase().includes(prev.sceneNumber.toString()) ||
-        curr.startState.toLowerCase().includes("continue") ||
-        curr.startState.toLowerCase().includes("direct") ||
-        curr.startState.length > 20;
-      if (!hasOverlap) {
-        issues.push({
-          sceneNumber: curr.sceneNumber,
-          dimension: "action",
-          title: "Vague Shot-to-Shot Action Handoff",
-          previousState: `Scene ${prev.sceneNumber} End: ${prev.endState}`,
-          currentState: `Scene ${curr.sceneNumber} Start: ${curr.startState}`,
-          suggestedFix: `Directly inherit the end posture and positions from Scene ${prev.sceneNumber}.`,
-          severity: "info",
-        });
-      }
-    }
-
-    // 5. Emotional Continuity Check
-    const prevEmotions = (prev.facialExpressions || "").toLowerCase();
-    const currEmotions = (curr.facialExpressions || "").toLowerCase();
-    const wasDistressed = prevEmotions.includes("terrified") || prevEmotions.includes("crying") || prevEmotions.includes("panicked");
-    const isCheerfullySmiling = currEmotions.includes("joyful laugh") || currEmotions.includes("beaming smile") || currEmotions.includes("celebrating");
-
-    if (wasDistressed && isCheerfullySmiling) {
-      issues.push({
-        sceneNumber: curr.sceneNumber,
-        dimension: "emotion",
-        title: "Sudden Emotional Reset without Narrative Beat",
-        previousState: `Scene ${prev.sceneNumber}: Character was distressed/panicked ("${prev.facialExpressions}").`,
-        currentState: `Scene ${curr.sceneNumber}: Character is immediately cheerful ("${curr.facialExpressions}").`,
-        suggestedFix: `Transition from relief or lingering concern before jumping straight to joyful celebration.`,
-        severity: "warning",
-      });
-    }
-
-    // Attach issues to current scene
-    curr.continuityIssues = issues;
-  }
-}
 
 // Timeline Validation & Standardizer Function
 function validateAndStandardizeTimeline(
@@ -644,9 +683,11 @@ function validateAndStandardizeTimeline(
     fullStoryText: string;
     chapters: any[];
     characters: any[];
+    /** Optional: lets scenes be linked to registered places by name. */
+    worldRegistry?: WorldRegistry | null;
   }
 ): any[] {
-  const { title, language, animationStyle, chapters, characters } = storyContext;
+  const { title, language, animationStyle, chapters, characters, worldRegistry } = storyContext;
   const validScenes: any[] = [];
   const sceneMap = new Map<number, any>();
 
@@ -659,7 +700,7 @@ function validateAndStandardizeTimeline(
 
   const numChapters = chapters && chapters.length > 0 ? chapters.length : 5;
   const mainChar = characters && characters[0];
-  const charName = mainChar?.name || "Gajar";
+  const charName = mainChar?.name || "Narrator";
 
   for (let num = 1; num <= targetSceneCount; num++) {
     const expectedTimeRange = formatTimeRange(num);
@@ -684,14 +725,14 @@ function validateAndStandardizeTimeline(
       // Standardize and ensure continuity fields on the generated scene
       scene.sceneNumber = num;
       scene.timeRange = expectedTimeRange;
-      scene.duration = "10s";
+      scene.duration = `${SECONDS_PER_SCENE}s`;
       scene.chapterNumber = scene.chapterNumber || chapterIdx;
       scene.chapterTitle = scene.chapterTitle || chapterTitle;
 
       if (!scene.startState) {
         scene.startState = num === 1
-          ? "Film Opening: Characters established in initial garden positions."
-          : `Direct continuation from Scene ${prevScene?.sceneNumber ?? num - 1}: ${prevScene?.endState || prevScene?.characterActions || "Continuing previous posture."}`;
+          ? `Film Opening: ${scene.environment || "opening location"} established, characters in their opening positions.`
+          : `${prevScene?.endState || prevScene?.characterActions || "Continuing the previous posture."}`;
       }
 
       if (!scene.endState) {
@@ -742,11 +783,32 @@ function validateAndStandardizeTimeline(
         }
       }
 
-      // Ensure Flow/Veo prompt has continuity directive
-      if (prevScene && scene.finalVideoPrompt && !scene.finalVideoPrompt.toUpperCase().includes("CONTINUE DIRECTLY FROM PREVIOUS SHOT")) {
-        scene.finalVideoPrompt = `CONTINUE DIRECTLY FROM PREVIOUS SHOT [Scene ${prevScene.sceneNumber}]: Inherit ${prevScene.endState || "finishing posture"}. ${scene.finalVideoPrompt}`;
+      // Fold the model's array-shaped snapshot into the typed ContinuityState.
+      scene.continuityState = normalizeContinuityState(scene.continuityState);
+
+      // Link the scene to a registered place. When the model named the place
+      // rather than its id, resolve it by name so the identity link survives.
+      if (scene.continuityState && worldRegistry && !scene.continuityState.placeId) {
+        scene.continuityState.placeId = resolvePlaceId(worldRegistry, scene.continuityState.location);
+      }
+
+      // Strip any cross-scene reference the model emitted anyway. Flow renders
+      // each clip with no memory of the others, so a phrase like "continue from
+      // the previous shot" is dead weight at best; the opening frame has to be
+      // restated absolutely instead.
+      if (scene.finalVideoPrompt) {
+        scene.finalVideoPrompt = makeSelfContained(scene.finalVideoPrompt, prevScene);
       }
     }
+
+    // Negative constraints travel in their own field, for Flow's dedicated
+    // negative prompt box - never appended to the positive prompt.
+    scene.negativePrompt = VIDEO_NEGATIVE_PROMPT;
+
+    // Classify the join and emit the operator's frame-upload step.
+    const transitionType = normalizeTransitionType(scene.transitionType, !prevScene);
+    scene.transitionType = transitionType;
+    scene.frameHandoff = buildFrameHandoff(transitionType, prevScene?.sceneNumber);
 
     // Assign Transition Contract (Part 11)
     scene.transitionContract = {
@@ -757,6 +819,7 @@ function validateAndStandardizeTimeline(
       thisSceneAction: scene.characterActions,
       thisSceneEnd: scene.endState,
       nextSceneHandoff: scene.nextSceneHandoff,
+      transitionType,
     };
 
     validScenes.push(scene);
@@ -765,8 +828,17 @@ function validateAndStandardizeTimeline(
   // Sort strictly by sceneNumber
   validScenes.sort((a, b) => a.sceneNumber - b.sceneNumber);
 
-  // Run the 10-dimension continuity validator across the entire timeline
-  validateSceneContinuity(validScenes, characters);
+  // Make unbroken joins continuous, then report what is left. Reconciliation
+  // is silent and safe; nothing is regenerated automatically.
+  const reconciled = reconcileHandoffs(validScenes);
+  if (reconciled.length > 0) {
+    console.log(
+      `[Continuity] Reconciled ${reconciled.length} unbroken join(s): scenes ${reconciled
+        .map((r) => r.sceneNumber)
+        .join(", ")}.`
+    );
+  }
+  validateContinuity(validScenes);
 
   return validScenes;
 }
@@ -810,6 +882,19 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   }
 
+  // Behind a proxy (Vercel, any reverse proxy) req.ip is the proxy's address
+  // unless Express is told to trust the forwarded header. Login throttling
+  // keys on the client IP, so without this every visitor shares one bucket.
+  app.set("trust proxy", true);
+
+  // Sign-in, sign-out and the session probe. Registered before the gate so
+  // they stay reachable while signed out.
+  registerAuthRoutes(app);
+
+  // Everything else under /api requires a session. App-level rather than
+  // per-route, so a newly added endpoint is protected by default.
+  app.use(requireAuth);
+
   // API Health Check
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", app: "Veggie Story Studio" });
@@ -825,6 +910,7 @@ export function createApp(options: CreateAppOptions = {}) {
         storyMode,
         customMinutes,
         animationStyle,
+        characterCount,
         lockedCharacters,
       } = req.body;
 
@@ -871,10 +957,14 @@ export function createApp(options: CreateAppOptions = {}) {
       // ==========================================
       // PHASE 1A: Narrative Blueprint (story first, scenes second)
       // ==========================================
-      const castTarget = targetCastSize(targetSceneCount);
+      // 'Auto' / absent normalises to undefined, restoring runtime-based sizing.
+      const selectedCharacterCount = normalizeCharacterCount(characterCount);
+      const castTarget = targetCastSize(targetSceneCount, selectedCharacterCount);
       const beatTarget = targetBeatCount(targetSceneCount);
       console.log(
-        `[Phase 1A] Designing narrative blueprint: ~${beatTarget} beats, ${castTarget.min}-${castTarget.max} characters, ${targetSceneCount} scenes.`
+        `[Phase 1A] Designing narrative blueprint: ~${beatTarget} beats, ` +
+          `${selectedCharacterCount !== undefined ? `exactly ${selectedCharacterCount} (user-set)` : `${castTarget.min}-${castTarget.max}`} characters, ` +
+          `${targetSceneCount} scenes.`
       );
 
       const blueprintContext = {
@@ -885,6 +975,8 @@ export function createApp(options: CreateAppOptions = {}) {
         animationStyle: selectedStyle,
         targetSceneCount,
         numChapters,
+        characterCount: selectedCharacterCount,
+        // Opt-in only. With nothing sent, the cast is invented for this topic.
         lockedCharacters:
           lockedCharacters && Array.isArray(lockedCharacters) && lockedCharacters.length > 0
             ? lockedCharacters
@@ -919,10 +1011,22 @@ export function createApp(options: CreateAppOptions = {}) {
         throw new Error("The narrative blueprint was incomplete (no cast or no beats). Please try again.");
       }
 
+      // Social facts are normalised once, here. Reciprocals are completed so
+      // every batch downstream sees both directions of every bond.
+      const socialGraph = buildSocialGraph(narrativeBlueprint.socialGraph);
+      narrativeBlueprint.socialGraph = socialGraph;
+
+      // Places and world entities, normalised once. Dangling references are
+      // dropped here so no batch is handed an id it cannot resolve.
+      const worldRegistry = buildWorldRegistry(narrativeBlueprint.worldRegistry);
+      narrativeBlueprint.worldRegistry = worldRegistry;
+
       console.log(
         `[Phase 1A] Blueprint ready: ${blueprintCast.length} characters, ${blueprintBeats.length} beats, ` +
           `${(narrativeBlueprint.setups || []).length} setups, ${(narrativeBlueprint.relationships || []).length} relationship arcs.`
       );
+      console.log(`[Social] ${summariseSocialGraph(socialGraph)}.`);
+      console.log(`[World] ${summariseWorldRegistry(worldRegistry)}.`);
 
       const phase1SystemInstruction = `You are a master children's animation director and screenplay writer (Pixar / Illumination quality).
 You are creating the master screenplay, narrative, and Character Bible for a ${selectedDuration} (~${targetSceneCount} scenes) animated vegetable story.
@@ -941,6 +1045,7 @@ THE CAST IS ALREADY DECIDED BY THE STORY (CRITICAL):
 - Generate the full 18-attribute Character Bible for EVERY single character in the cast.
 - Each character's design must EXPRESS their dramatic role: their want, need and flaw should be legible in body shape, wardrobe, colour palette and typical expressions. A character whose flaw is stubbornness should look planted; one whose need is to be seen should be dressed to disappear.
 - 'speakingStyle' and 'voicePersonality' must match the VOICE SIGNATURE the blueprint assigns them, so the scene department can write lines that are recognisable without a name tag.
+- Where social facts are listed, design each character CONSISTENTLY with their life stage and responsibilities - what they can reach, carry and are trusted with. But a relationship label must NEVER dictate personality: do not design a strict father, a nurturing mother, a wise elder or a naive child because of a label. Their temperament comes from the want, need, flaw and strength the blueprint gave them individually.
 - Every character must have an authoritative 'lockedVisualDescription' for Google Flow / Veo animation.
 
 ==================================================
@@ -979,6 +1084,8 @@ CENTRAL QUESTION: ${narrativeBlueprint.centralQuestion}
 
 CAST (names, types and dramatic design are fixed):
 ${JSON.stringify(blueprintCast, null, 2)}
+
+${buildSocialContextForBible(socialGraph)}
 
 RELATIONSHIP ARCS (must visibly evolve across the screenplay):
 ${JSON.stringify(narrativeBlueprint.relationships || [], null, 2)}
@@ -1040,10 +1147,15 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
                     id: { type: Type.STRING },
                     name: { type: Type.STRING },
                     veggieType: { type: Type.STRING },
-                    role: { type: Type.STRING },
+                    role: {
+                      type: Type.STRING,
+                      description:
+                        "This character's DRAMATIC FUNCTION in this story, as a descriptive phrase - what they DO to the plot. Shape examples only, never copy them: 'protagonist chasing the lost object', 'cautious friend who challenges the lead's impulsiveness', 'rival whose competing goal creates the conflict', 'elder whose refusal to answer forces the lead to decide'. NEVER write 'MAIN', 'SUPPORTING' or 'MINOR' here - that is the separate 'importance' field, and repeating it makes this field useless.",
+                    },
                     importance: {
                       type: Type.STRING,
-                      description: "MAIN, SUPPORTING, or MINOR",
+                      description:
+                        "Screen-time tier ONLY: exactly one of MAIN, SUPPORTING, or MINOR. Do not put a description here, and never repeat this value in 'role'.",
                     },
                     personality: { type: Type.STRING },
                     agePersonalityFeel: { type: Type.STRING },
@@ -1108,7 +1220,8 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
               },
               moral: {
                 type: Type.STRING,
-                description: "The wholesome moral / lesson of the story in the chosen language",
+                description:
+                  "The story's underlying lesson, for the PARENT/EDUCATOR panel in the app UI only. It is metadata ABOUT the film, never a line inside it. No character says this, nothing resembling it appears in any dialogue, and the closing scene must not restate it. Write it in the chosen language.",
               },
               funQuestion: {
                 type: Type.STRING,
@@ -1161,6 +1274,11 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
           id: char.id || `char_${char.veggieType?.toLowerCase().replace(/[^a-z0-9]/g, "") || "veggie"}_${idx + 1}`,
           // Importance is a story decision, so the blueprint wins over position.
           importance: arc?.importance || char.importance || (idx < 2 ? "MAIN" : idx < 4 ? "SUPPORTING" : "MINOR"),
+          // 'role' must describe what this character DOES to the plot. When the
+          // model echoes the importance tier instead, fall back to the
+          // blueprint's narrativePurpose, which is the same information written
+          // properly. Never leave the two fields duplicating each other.
+          role: resolveDramaticRole(char.role, arc?.narrativePurpose),
           isLocked: true,
           // Dramatic design travels with the character into every scene prompt.
           want: arc?.want,
@@ -1217,9 +1335,45 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         fullStoryText: storyData.fullStoryText,
         chapters: storyData.chapters,
         characters: storyData.characters,
+        worldRegistry,
       });
 
+      // Final pass after standardisation: reconcile unbroken joins once more,
+      // then report. Report only - no scene is regenerated automatically.
+      const finalReconciled = reconcileHandoffs(storyData.scenes);
+      validateContinuity(storyData.scenes);
+      const continuitySummary = summariseContinuity(storyData.scenes);
+      storyData.continuityReport = {
+        reconciledJoins: finalReconciled.length,
+        ...continuitySummary,
+      };
+      console.log(
+        `[Continuity] Final: ${finalReconciled.length} join(s) reconciled, ` +
+          `${continuitySummary.warnings} warning(s) and ${continuitySummary.infos} note(s) across ` +
+          `${continuitySummary.scenesWithIssues} scene(s) flagged for review.`
+      );
+
+      // Persisted on the story so regeneration inherits the facts rather than
+      // inventing new ones.
+      storyData.socialGraph = socialGraph;
+      storyData.worldRegistry = worldRegistry;
+
+      // Identity and social facts. Report only: nothing is regenerated, and
+      // physical state is deliberately left to the Continuity Director.
+      storyData.factReport = validateStoryFacts({
+        scenes: storyData.scenes,
+        socialGraph,
+        worldRegistry,
+        castNames: (storyData.characters || []).map((c: any) => c?.name).filter(Boolean),
+      });
+      console.log(
+        `[Facts] ${storyData.factReport.warnings} warning(s) and ${storyData.factReport.infos} note(s) ` +
+          `on identity and social facts.`
+      );
+
       storyData.estimatedScenesCount = storyData.scenes.length;
+      // Preserved on the story so regeneration reuses the same cast-size choice.
+      storyData.characterCount = selectedCharacterCount ?? "Auto";
       storyData.storyQuality = buildStoryQualityReport(
         storyData.scenes,
         narrativeBlueprint,
@@ -1399,7 +1553,8 @@ This scene sits between Scene ${sceneNum - 1} and Scene ${sceneNum + 1}. You mus
    "${nextStart}"
 3. NO RESET: Retain character screen positions, held props, lighting, environment, and persistent emotional momentum.
 4. MULTI-CHARACTER DIALOGUE: Format natural conversation with speaker tags in ${selectedLanguage}. Synchronize speech with physical actions and facial expressions. Populate 'dialogueTurns'.
-5. FLOW / VEO PROMPT: English prompt starting with "CONTINUE DIRECTLY FROM PREVIOUS SHOT [Scene ${sceneNum - 1}]:" with motivated camera motion, lighting, Character Bible details, and continuity negative constraints.`
+5. FLOW / VEO PROMPT (SELF-CONTAINED): The prompt is pasted into Flow alone and the model cannot see Scene ${sceneNum - 1}. NEVER reference another shot ("continue from previous shot", "same as before", "inherit", "unchanged"). Instead OPEN by restating the previous end state IN FULL as fresh description - each character's screen position, pose, held props, eyeline and expression - then give one continuous ${SECONDS_PER_SCENE}-second action, motivated camera motion, lighting, and the exact closing frame. Restate every present character's locked visual description word-for-word. Positive description only: no "avoid", "no" or "without" - negative constraints are delivered in a separate field.
+6. TRANSITION TYPE: Set 'transitionType' to "CHAIN" only if the action flows unbroken from Scene ${sceneNum - 1} (same location, same continuous motion, no time jump); otherwise "CUT".`
         + buildStoryIntelligenceDirectives({
           startScene: sceneNum,
           endScene: sceneNum,
@@ -1410,13 +1565,13 @@ This scene sits between Scene ${sceneNum - 1} and Scene ${sceneNum + 1}. You mus
 
       const prompt = `Regenerate Scene #${sceneNum}:
 Time Range: ${expectedTimeRange}
-Duration: 10s
+Duration: ${SECONDS_PER_SCENE}s
 Story Context: ${fullStoryText || topic}
 Characters Bible: ${JSON.stringify(characters || [], null, 2)}
 PREVIOUS SCENE END STATE (MUST INHERIT): ${prevEnd}
 NEXT SCENE START STATE (MUST HAND OFF INTO): ${nextStart}
 Current Existing Scene Content: ${JSON.stringify(existingScene || currentSceneData || {}, null, 2)}
-${buildBlueprintPromptBlock(singleSceneSlice, null)}
+${buildBlueprintPromptBlock(singleSceneSlice, null, (characters || []).map((c: any) => c?.name).filter(Boolean))}
 `;
 
       const response = await generateText({
@@ -1448,10 +1603,10 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null)}
       const scene = parsed.scene;
       scene.sceneNumber = sceneNum;
       scene.timeRange = expectedTimeRange;
-      scene.duration = "10s";
+      scene.duration = `${SECONDS_PER_SCENE}s`;
 
       if (!scene.startState) {
-        scene.startState = `Direct continuation from Scene ${sceneNum - 1}: ${prevEnd}`;
+        scene.startState = prevEnd;
       }
       if (!scene.endState) {
         scene.endState = `At 10.0s: ${scene.characterActions}. Finishing posture prepares for Scene ${sceneNum + 1}.`;
@@ -1460,12 +1615,31 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null)}
         scene.nextSceneHandoff = `Scene ${sceneNum + 1} must inherit character positions and held props.`;
       }
 
+      // Same self-containment pass the batch pipeline applies, so a
+      // regenerated scene is copy-pasteable on exactly the same terms.
+      if (scene.finalVideoPrompt) {
+        scene.finalVideoPrompt = makeSelfContained(
+          scene.finalVideoPrompt,
+          prevEnd ? { endState: prevEnd } : undefined
+        );
+      }
+      scene.negativePrompt = VIDEO_NEGATIVE_PROMPT;
+      scene.continuityState = normalizeContinuityState(scene.continuityState);
+
+      const transitionType = normalizeTransitionType(scene.transitionType, sceneNum <= 1);
+      scene.transitionType = transitionType;
+      scene.frameHandoff = buildFrameHandoff(
+        transitionType,
+        sceneNum > 1 ? sceneNum - 1 : undefined
+      );
+
       scene.transitionContract = {
         previousSceneEnd: prevEnd,
         thisSceneStart: scene.startState,
         thisSceneAction: scene.characterActions,
         thisSceneEnd: scene.endState,
         nextSceneHandoff: scene.nextSceneHandoff,
+        transitionType,
       };
 
       return res.json({ success: true, scene, data: { scene } });
@@ -1485,8 +1659,19 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null)}
         return res.status(400).json({ error: "Scenes array is required." });
       }
       const cloned = JSON.parse(JSON.stringify(scenes));
-      validateSceneContinuity(cloned, characters || []);
-      return res.json({ success: true, data: { scenes: cloned } });
+      // Scenes arrive as raw client JSON, where continuityState still holds the
+      // model's array shape. Without normalising first, every map-based check
+      // reads an empty object and silently passes.
+      for (const scene of cloned) {
+        if (scene && scene.continuityState && !scene.continuityState.characterPositions) {
+          scene.continuityState = normalizeContinuityState(scene.continuityState);
+        }
+      }
+      // Re-check on demand. Report only: this endpoint never rewrites a scene,
+      // so the user stays in charge of whether to regenerate anything.
+      validateContinuity(cloned);
+      const summary = summariseContinuity(cloned);
+      return res.json({ success: true, data: { scenes: cloned, summary } });
     } catch (error: any) {
       return res.status(500).json({ error: error.message || "Failed to validate continuity." });
     }
@@ -1495,7 +1680,12 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null)}
   // Dedicated Character Bible Regeneration API Endpoint
   app.post("/api/regenerate-characters", async (req, res) => {
     try {
-      const { language, topic, storyMode, animationStyle, lockedCharacters } = req.body;
+      const { language, topic, storyMode, animationStyle, characterCount, lockedCharacters, socialGraph } = req.body;
+      const selectedCharacterCount = normalizeCharacterCount(characterCount);
+      // Social facts established earlier in the story survive a cast rebuild.
+      // Without this, regenerating characters silently destroyed every
+      // relationship the story had already committed to.
+      const existingSocialGraph = socialGraph ? buildSocialGraph(socialGraph) : null;
 
       if (!topic || typeof topic !== "string" || !topic.trim()) {
         return res.status(400).json({ error: "Story topic is required." });
@@ -1507,12 +1697,24 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null)}
       const systemInstruction = `You are a master character designer for animated vegetable children's stories in ${selectedStyle} style and mode "${selectedMode}".
 Generate a comprehensive, reusable "Character Bible" for all characters suitable for the story topic.
 
-DYNAMIC CAST SIZING:
+${selectedCharacterCount !== undefined
+  ? `CAST SIZE - SET BY THE USER:
+- Generate EXACTLY ${selectedCharacterCount} characters. Not ${selectedCharacterCount - 1}, not ${selectedCharacterCount + 1}. This is a hard requirement.
+- The number is fixed; WHO they are is not. Invent all ${selectedCharacterCount} from the story topic ("${topic.trim()}"), mode and language.
+- Give every one of the ${selectedCharacterCount} a distinct narrative purpose and role. None may be decoration.`
+  : `DYNAMIC CAST SIZING:
 - DO NOT default or hardcode to 2 characters!
 - Analyze the narrative scope and story topic ("${topic.trim()}"). Provide a dynamic cast of 3 to 6 characters (protagonists, supporting friends, mentors, or community members).
-- Every character must have a clear narrative purpose and role.
+- Every character must have a clear narrative purpose and role.`}
 - Classify each character with an 'importance': 'MAIN' | 'SUPPORTING' | 'MINOR'.
 
+${existingSocialGraph && !isEmptyGraph(existingSocialGraph)
+  ? `\n${buildSocialContextForBible(existingSocialGraph)}\n
+THESE SOCIAL FACTS ARE ALREADY ESTABLISHED AND MUST SURVIVE THIS REGENERATION:
+- Keep every listed relationship exactly as it stands. Do not re-label, drop or invent relationships.
+- Keep each listed character's life stage and responsibilities.
+- Design consistently with those facts, but NEVER let a relationship label dictate personality - temperament comes from each character's own want, need, flaw and strength.\n`
+  : ""}
 For EVERY character, generate all 18 attributes:
 1. Character name
 2. Vegetable type
@@ -1567,10 +1769,15 @@ CRITICAL:
                     id: { type: Type.STRING },
                     name: { type: Type.STRING },
                     veggieType: { type: Type.STRING },
-                    role: { type: Type.STRING },
+                    role: {
+                      type: Type.STRING,
+                      description:
+                        "This character's DRAMATIC FUNCTION in this story, as a descriptive phrase - what they DO to the plot. Shape examples only, never copy them: 'protagonist chasing the lost object', 'cautious friend who challenges the lead's impulsiveness', 'rival whose competing goal creates the conflict', 'elder whose refusal to answer forces the lead to decide'. NEVER write 'MAIN', 'SUPPORTING' or 'MINOR' here - that is the separate 'importance' field, and repeating it makes this field useless.",
+                    },
                     importance: {
                       type: Type.STRING,
-                      description: "MAIN, SUPPORTING, or MINOR",
+                      description:
+                        "Screen-time tier ONLY: exactly one of MAIN, SUPPORTING, or MINOR. Do not put a description here, and never repeat this value in 'role'.",
                     },
                     personality: { type: Type.STRING },
                     agePersonalityFeel: { type: Type.STRING },
