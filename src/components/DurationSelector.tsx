@@ -13,6 +13,7 @@ import {
   CUSTOM_MINUTES_MAX,
   CUSTOM_MINUTES_STEP,
   CUSTOM_QUICK_MINUTES,
+  SHOT_LENGTH_LABEL,
 } from '../shared/duration';
 import { Clock, Zap, Flame, BookMarked, Sparkles, Film, Clapperboard, Sliders } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -118,7 +119,7 @@ export const DurationSelector: React.FC<DurationSelectorProps> = ({
           >
             <Film className="w-3.5 h-3.5 text-emerald-600" />
             <span>
-              <strong className="text-emerald-700 font-bold">{getEstimatedScenesNumber()} Scenes</strong> (~10s each)
+              <strong className="text-emerald-700 font-bold">{getEstimatedScenesNumber()} Scenes</strong> (~{SHOT_LENGTH_LABEL} each)
             </span>
             <span className="text-slate-600 font-bold">|</span>
             <span className="text-amber-700 font-semibold">{getTotalDurationText()}</span>
@@ -216,7 +217,7 @@ export const DurationSelector: React.FC<DurationSelectorProps> = ({
                 </div>
 
                 <div className="text-xs font-mono font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-                  Target: ≈ {customEstimatedScenes} Scenes (~10s each)
+                  Target: ≈ {customEstimatedScenes} Scenes (~{SHOT_LENGTH_LABEL} each)
                 </div>
               </div>
 

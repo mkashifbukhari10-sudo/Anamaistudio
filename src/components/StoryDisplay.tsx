@@ -1,3 +1,4 @@
+import { SHOT_LENGTH_LABEL } from '../shared/duration';
 import React, { useState, useEffect } from 'react';
 import { VeggieStory, CharacterBibleEntry, StudioTab } from '../types';
 import { createSpeechNarration } from '../utils/audio';
@@ -227,7 +228,7 @@ ${story.funQuestion ? `💡 DISCUSSION QUESTION:\n${story.funQuestion}\n` : ''}
               )}
 
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold font-mono whitespace-nowrap">
-                <span>{scenesCount} Scenes (~10s)</span>
+                <span>{scenesCount} Scenes (~{SHOT_LENGTH_LABEL})</span>
               </span>
 
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-800 border border-amber-200 font-bold font-mono whitespace-nowrap">
@@ -354,7 +355,7 @@ ${story.funQuestion ? `💡 DISCUSSION QUESTION:\n${story.funQuestion}\n` : ''}
           }`}
         >
           <Clapperboard className="w-4 h-4 text-orange-600" />
-          <span>10s Scene Planner ({scenesCount})</span>
+          <span>{SHOT_LENGTH_LABEL} Scene Planner ({scenesCount})</span>
         </button>
 
         <button
@@ -579,7 +580,7 @@ ${story.funQuestion ? `💡 DISCUSSION QUESTION:\n${story.funQuestion}\n` : ''}
           />
         )}
 
-        {/* Tab 4: 10-Second Scene Planner */}
+        {/* Tab 4: Scene Planner */}
         {localActiveTab === 'scenes' && (
           <ScenePlannerSection
             story={story}

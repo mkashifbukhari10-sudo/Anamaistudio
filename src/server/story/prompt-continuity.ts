@@ -30,7 +30,21 @@ import type { FrameHandoff, ShotTransitionType } from "../../types.js";
 export const VIDEO_NEGATIVE_PROMPT =
   "extra limbs, duplicated characters, warped face, morphing features, melting geometry, " +
   "flickering textures, inconsistent proportions, blurry motion, low resolution, " +
-  "text overlay, watermark, subtitles, logo, distorted hands, dead eyes, uncanny expression";
+  "text overlay, watermark, subtitles, logo, distorted hands, dead eyes, uncanny expression, " +
+  // Rendered lettering is the least stable thing Veo produces. In a finished
+  // film a banner reading "جو کریلے کو ہرائے گا..." became meaningless
+  // Devanagari one clip later, and a money bag's "پانچ لاکھ" became "پورچ کرٹس"
+  // across half a second. Naming the failure in the negative field is the only
+  // lever available here; restating the text verbatim in the positive prompt
+  // does the rest.
+  "misspelled text, garbled lettering, distorted script, nonsense writing, malformed numerals, " +
+  // A real generation came back as a COMIC PAGE: four panels in a grid with the
+  // dialogue drawn in speech balloons. The prompt was carrying a timestamped
+  // list of framings, which reads as a storyboard spec, so the model laid out
+  // one panel per row. The list is now prose, and these name the failure.
+  "comic panel, comic strip, storyboard, multiple panels, panel grid, split screen, " +
+  "collage, contact sheet, film strip, speech bubble, speech balloon, caption box, " +
+  "subtitle bar, montage grid, before and after layout, side by side frames";
 
 /**
  * Phrases that point at a shot the model cannot see.
@@ -59,16 +73,21 @@ const ORPHANED_LEADING_PUNCTUATION = /^[\s,:;.\-–—]+/;
 /**
  * Rewrites a prompt so it stands on its own.
  *
- * Cross-scene references are stripped, any trailing "Avoid: ..." block is
- * removed (negatives travel in their own field), and when the previous scene
- * recorded an endState the prompt is opened with that state spelled out as
- * fresh description - the same information the reference was gesturing at, in
- * the only form the model can actually use.
+ * Cross-scene references are stripped and any trailing "Avoid: ..." block is
+ * removed, because negatives travel in their own field.
+ *
+ * This no longer prepends the previous endState. It used to, and section 6 of
+ * the batch prompt separately ordered the model to restate that same endState at
+ * the head of the prompt - so both ran, and 12 of 36 prompts came out carrying
+ * two different descriptions of frame one. The prefix was also pasted in ENDING
+ * grammar, which is why 24 of 36 prompts opened by telling Veo that the first
+ * frame occurs at the ten-second mark.
+ *
+ * Both frames are now owned by 'seam.ts', which renders one shared description
+ * per join and uses it as this scene's closing frame AND the next scene's
+ * opening frame. See applyFrameBookends().
  */
-export function makeSelfContained(
-  prompt: string,
-  prevScene?: { endState?: string } | null
-): string {
+export function makeSelfContained(prompt: string): string {
   let cleaned = prompt;
 
   for (const pattern of CROSS_SCENE_REFERENCE_PATTERNS) {
@@ -79,38 +98,10 @@ export function makeSelfContained(
   TRAILING_NEGATIVE_BLOCK.lastIndex = 0;
   cleaned = cleaned.replace(TRAILING_NEGATIVE_BLOCK, "");
 
-  cleaned = cleaned
+  return cleaned
     .replace(ORPHANED_LEADING_PUNCTUATION, "")
     .replace(/\s{2,}/g, " ")
     .trim();
-
-  const priorEndState = prevScene?.endState?.trim();
-  if (priorEndState && !openingFrameIsDescribed(cleaned, priorEndState)) {
-    const stated = priorEndState.replace(/[\s.]+$/, "");
-    cleaned = `Opening frame: ${stated}. ${cleaned}`;
-  }
-
-  return cleaned;
-}
-
-/**
- * True when the prompt already restates the inherited opening frame, so the
- * prefix would only duplicate it.
- *
- * Compared on distinctive words rather than exact text, because the model
- * paraphrases rather than echoing the endState verbatim.
- */
-function openingFrameIsDescribed(prompt: string, priorEndState: string): boolean {
-  const opening = prompt.slice(0, 400).toLowerCase();
-  const keywords = priorEndState
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((word) => word.length > 4);
-
-  if (keywords.length === 0) return false;
-
-  const hits = keywords.filter((word) => opening.includes(word)).length;
-  return hits / keywords.length >= 0.5;
 }
 
 /**
@@ -129,30 +120,114 @@ export function normalizeTransitionType(
 }
 
 /**
- * The operator's step in Flow / Higgsfield before this scene's prompt is pasted.
+ * The frame handoff moved to './frame-handoff.js'.
  *
- * Only CHAIN joins need the last-frame upload. Frame-chaining an ordinary cut
- * wastes time and fights the edit, since a cut is meant to read as a break.
+ * It used to live here and was binary: CHAIN uploads a frame, CUT does not. A
+ * frame-level look at a finished film showed that policy was the cause of the
+ * worst drift - most joins are cuts, many cuts stay in the same room with the
+ * same people, and those are exactly the joins where faces, in-frame text and
+ * background crowds were being re-invented. Classifying a join needs the
+ * continuity state of both scenes, which does not belong in this module.
  */
-export function buildFrameHandoff(
-  transitionType: ShotTransitionType,
-  prevSceneNumber?: number
-): FrameHandoff {
-  if (transitionType === "CHAIN" && prevSceneNumber) {
-    return {
-      type: "CHAIN",
-      instruction:
-        `CHAIN — seamless join. Export the LAST FRAME of Scene ${prevSceneNumber} and upload it ` +
-        `as this clip's first-frame / reference image in Flow before pasting the prompt. ` +
-        `Without that upload the face and palette will drift across the join.`,
-      sourceSceneNumber: prevSceneNumber,
-    };
-  }
 
-  return {
-    type: "CUT",
-    instruction:
-      "CUT — ordinary edit. Generate from the prompt alone; no frame upload needed. " +
-      "Keep the character reference image attached so identity holds.",
-  };
+/**
+ * Guarantees every spoken line actually reaches the Flow / Veo prompt.
+ *
+ * Flow generates speech from the prompt text and nothing else. A scene can
+ * therefore carry six lively turns in 'dialogueTurns', show them correctly in
+ * the app, and still produce a silent clip - because the only thing pasted into
+ * Flow is 'finalVideoPrompt', and the model frequently summarises the
+ * conversation ("they talk excitedly") instead of quoting it.
+ *
+ * So this checks whether the lines are really in the prompt and appends the
+ * ones that are missing as an explicit, ordered, attributed block. It is a
+ * safety net, not the primary mechanism: when the model has already written the
+ * dialogue into the prompt, nothing is added.
+ */
+export function ensureDialogueInPrompt(
+  prompt: string,
+  turns: Array<{ speaker?: string; line?: string; accompanyingAction?: string }> | undefined,
+  language: string
+): string {
+  const spoken = (Array.isArray(turns) ? turns : []).filter(
+    (t) => String(t?.line || "").trim().length > 0
+  );
+  if (spoken.length === 0) return prompt;
+
+  const haystack = normaliseForMatch(prompt);
+  const missing = spoken.filter((t) => !haystack.includes(matchKey(t.line)));
+
+  // Partial coverage still gets the full block: a prompt quoting two of six
+  // lines is the exact failure being fixed, and appending only the strays would
+  // scramble the order the conversation has to be spoken in.
+  if (missing.length === 0) return prompt;
+
+  const block = spoken
+    .map((t) => {
+      const speaker = String(t?.speaker || "").trim() || "Character";
+      const line = String(t.line).trim().replace(/^["“”]+|["“”]+$/g, "");
+      const action = String(t?.accompanyingAction || "").trim();
+      return action
+        ? `${speaker} says, "${line}" while ${action.replace(/\.$/, "")}.`
+        : `${speaker} says, "${line}"`;
+    })
+    .join("\n");
+
+  const base = prompt.trim().replace(/[\s]+$/, "");
+  return `${base}\n\nSpoken dialogue, lip-synced in ${language}, delivered in this order:\n${block}`;
+}
+
+/**
+ * Removes a speaker's name from INSIDE their own quoted line.
+ *
+ * The schema teaches the `<Character>: "line"` format for the flat `dialogue`
+ * field, and the model carries that habit into the Flow prompt, where it lands
+ * inside the quotation marks:
+ *
+ *   stammering earnestly: "Chhotu: Dada... main toh sirf madad?"
+ *
+ * Flow speaks whatever is in the quotes, so the clip says the word "Chhotu"
+ * out loud before the line. ensureDialogueInPrompt cannot catch it, because the
+ * line genuinely IS present - just with a label welded on.
+ *
+ * Only labels matching a known character are stripped, so a line that happens
+ * to contain a colon keeps it.
+ */
+export function stripSpeakerLabelsInQuotes(
+  prompt: string,
+  characterNames: string[] | undefined
+): string {
+  const names = (Array.isArray(characterNames) ? characterNames : [])
+    .map((n) => String(n || "").trim())
+    .filter((n) => n.length > 1)
+    // Longest first, so "Kaddu Dada" is tried before a bare "Kaddu".
+    .sort((a, b) => b.length - a.length);
+
+  if (names.length === 0) return prompt;
+
+  const alternation = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  // The label sits immediately after an opening quote; the quote itself stays.
+  const pattern = new RegExp(`(["'“‘])\\s*(?:${alternation})\\s*:\\s*`, "gi");
+
+  return prompt.replace(pattern, "$1");
+}
+
+/** Lowercased, punctuation-free text, for comparing what a prompt says. */
+function normaliseForMatch(text: string): string {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0600-\u06FF\u0900-\u097F]+/g, " ")
+    .trim();
+}
+
+/**
+ * The distinctive part of a line, for presence testing.
+ *
+ * Long lines are matched on their opening words only - the model often quotes a
+ * line with light rewording or trimmed tail, and demanding the whole string
+ * back would report almost every quoted line as missing.
+ */
+function matchKey(line: unknown): string {
+  const words = normaliseForMatch(String(line || "")).split(" ").filter(Boolean);
+  return words.slice(0, 6).join(" ");
 }

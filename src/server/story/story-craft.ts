@@ -1,3 +1,10 @@
+import { journeyAllowedAtScale, maxPhasesFor } from "./life-journey.js";
+import {
+  buildChoreographyGuidance,
+  buildPerformanceTypeGuidance,
+  buildSpeakabilityGuidance,
+} from "./performance-budget.js";
+import type { StoryScope } from "../../types.js";
 /**
  * STORY CRAFT DOCTRINE — genre- and scale-adaptive.
  *
@@ -30,6 +37,11 @@ export interface CraftContext {
    * means the topic decides. A named setting narrows guidance; it never seeds.
    */
   setting?: StorySetting;
+  /**
+   * Time shape for this request. 'auto' lets the topic decide. Only ever
+   * NARROWS what is offered - it never seeds content.
+   */
+  storyScope?: StoryScope;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +105,8 @@ const DEFAULT_SHAPE: GenreShape = {
     "Escalate by raising cost: each attempt should risk or lose something the previous one did not.",
   ending:
     "Resolve by change, not by luck. What the protagonist does differently at the end must be traceable to what they learned.",
-  dialogue: "Natural spoken rhythm. Characters talk to each other, not to the audience.",
+  dialogue:
+    "Natural spoken rhythm, and plenty of it. Characters talk to each other, not to the audience, and a scene where they talk is almost always more alive than one where they do not.",
 };
 
 const GENRE_SHAPES: Array<{ match: RegExp; shape: GenreShape }> = [
@@ -157,7 +170,7 @@ const GENRE_SHAPES: Array<{ match: RegExp; shape: GenreShape }> = [
       ending:
         "The strongest ending here is an ACTION, not a speech - something given up, something handed over, a gesture that costs the character. Let the image carry the feeling.",
       dialogue:
-        "Understated. People in real feeling say less, not more. Resist having characters narrate their own emotions.",
+        "Warm and TALKATIVE. Let them speak freely to each other - tease, worry aloud, interrupt, reassure, argue about something small. The restraint applies to what they say about their FEELINGS, never to how much they talk: a character can chatter through a whole scene and still never name what they feel. Resist having characters narrate their own emotions, not having them speak.",
     },
   },
   {
@@ -305,6 +318,75 @@ WORLD COHERENCE:
 }
 
 // ---------------------------------------------------------------------------
+// LIFE JOURNEY
+//
+// CAPABILITY, never content. Nothing below seeds a family, an occupation, a
+// setting, a hardship or an outcome. It tells the Story Director that a story
+// spanning TIME is available, what such a story has to get right, and - at
+// length - what it must not default to.
+//
+// Emitted ONLY where the runtime can carry it. Below the scale gate this
+// returns nothing at all, and the schema does not offer the field either, so a
+// short story is never handed a shape it has no room to execute.
+// ---------------------------------------------------------------------------
+
+function buildLifeJourneyDoctrine(ctx: CraftContext): string {
+  if (!journeyAllowedAtScale(ctx.targetSceneCount, ctx.storyScope ?? "Auto")) return "";
+
+  const ceiling = maxPhasesFor(ctx.targetSceneCount);
+  const requested = ctx.storyScope === "Life Journey";
+
+  const decision = requested
+    ? `The user has ASKED for a story that spans time. Plan a life journey, and make the elapsed time genuinely necessary to what you are telling.`
+    : `DECIDE FIRST whether this topic wants elapsed time at all. Most do not. A story whose power comes from continuous pressure - one day, one problem, one unbroken situation - is WEAKER when broken across years. Omit 'lifeJourney' entirely for those, and that is the common, correct answer.`;
+
+  return `--------------------------------------------------
+STORIES THAT SPAN TIME - OPTIONAL, AND USUALLY NOT THE ANSWER
+--------------------------------------------------
+${decision}
+
+WHAT A LIFE JOURNEY IS:
+- Several PHASES of life, separated by deliberate jumps in time, where the people at the end are legitimately different from the people at the start - and that difference is the point.
+- A phase is a contiguous run of CHAPTERS. Name the chapters; the scene range follows from them. Never assign scenes to a phase directly.
+- At most ${ceiling} phases at this runtime. FEWER IS BETTER. Two phases used well beat four used thinly, and one phase is always a legitimate answer.
+
+THE TEST BEFORE YOU PLAN ONE:
+- State what the elapsed time GIVES this story that a continuous version would lack. If you cannot, do not plan a journey.
+- Plan the two ends first - the life it opens on and the life it closes on. Everything between exists to get from one to the other. If those two lives are barely different, there is no journey here.
+- DIFFERENT IS NOT BETTER. A closing life that is quieter, smaller, poorer or sadder can be the stronger ending. Do not assume the story climbs.
+
+MAKING TIME VISIBLE:
+- Every jump must be SHOWN. A jump the audience cannot see is a continuity break with a label on it. Possibilities, never a menu: a season changed in the same framing; an object visibly aged or worn; a routine returning visibly different; a growth reveal; a match-cut across the gap.
+- Say what is different afterwards. A jump that changes nothing should be a cut instead.
+- After a jump, RE-ESTABLISH THE NEW NORMAL before advancing the plot. Two scenes is usually enough. Jumping straight into new events leaves the audience with nobody they recognise.
+- The first beat after a jump is caused by the ACCUMULATED CONSEQUENCE of the previous phase, not by the scene immediately before it. Say so in its causeFromPrevious, or the jump reads as arbitrary.
+
+WHAT MAY CHANGE ACROSS A JUMP, AND WHAT MAY NOT:
+- MAY: life stage, what someone does, what they can do, what they are responsible for, how a household earns, what it owns, where people live, which places the story uses, who lives with whom.
+- MAY NOT: who someone IS to another. A parent does not stop being a parent. A sibling does not become a friend.
+- MAY NOT: physical identity. The vegetable type, the face, the eyes, the features and the palette are locked for the entire film. A character may grow taller, stand differently, dress differently and show wear - they may never become a different-looking character.
+- MAY NOT: a character's voice rule. Someone who never finishes a sentence at eight still does at thirty. That persistence is precisely what makes a time jump land.
+- MAY NOT: a flaw, cured by the passage of time alone. If a flaw is different afterwards, the phase before must have shown what changed it.
+
+ACHIEVEMENT MUST BE EARNED:
+- A long-horizon goal is an ASPIRATION, not a 'want'. A want stays filmable and immediate, and each phase gets its own; the aspiration is what those wants serve across years.
+- Every achievement needs MILESTONES, and every milestone must name EARLIER scenes that already showed the work. Achievement that arrives without visible work is the single most common failure of this form.
+- Show the cost. What the pursuit takes from the people around them is usually more interesting than the pursuit.
+- The aspiration does NOT have to be achieved. Achieved, redirected, relinquished and denied are all legitimate, and the last three are frequently stronger.
+
+ORDINARY LIFE ACROSS TIME:
+- Routines are how time becomes visible. The same walk, meal, task or greeting, returning in a later phase visibly changed, does more than any line of dialogue about years passing.
+- A routine must VARY. First showing establishes; second differs; third breaks or carries a different charge. A routine shown identically three times is filler with a chore in front of it.
+- Do not fill a phase with errands. Every phase needs at least one milestone or one relationship that genuinely turns, or the phase should not exist.
+
+THESE ARE POSSIBILITIES, NEVER DEFAULTS:
+- Do NOT default to: a poor family; a village; a farming household; a child who becomes an officer; a husband and wife; an education-to-success arc; a story that ends in achievement.
+- A life journey may follow a shopkeeper, a craftsperson, a teacher, a driver, two friends across decades, siblings, a grandparent, a worker, a small business, a neighbourhood. It may be urban. It may contain no children and no marriage. It may be about someone handing something over rather than building something up.
+- Households earn in many ways - cultivating, keeping animals, making by hand, repairing, selling from a shop or a cart, carrying, cooking, teaching, caring, performing, clerical work, daily-wage work, a small business, or several at once. Some stories never establish how anyone earns, and that is fine.
+- IF YOUR FIRST INSTINCT MATCHES THE LIST ABOVE, DISCARD IT AND DESIGN FROM THIS TOPIC. The topic, language and mode in front of you decide everything; no shape is the house style.`;
+}
+
+// ---------------------------------------------------------------------------
 // SCENE-LEVEL CRAFT
 // ---------------------------------------------------------------------------
 
@@ -318,20 +400,40 @@ export function buildSceneCraftRules(ctx: CraftContext): string {
   const shape = genreShape(ctx.storyMode);
   const isFinalScene = Boolean(ctx.includesFinalScene);
   const isYoung = /simple kids|funny|slapstick/i.test(ctx.storyMode || "");
+  // Speakability, not preference.
+  //
+  // Conversational Roman Urdu / Urdu / Hindi runs at roughly three words a
+  // second, and the shot also has to carry breath, reaction and
+  // physical action - so only part of it can be speech. The previous rule here
+  // asked for four to six turns of eight to fourteen words, i.e. 32-84 words,
+  // which is 11-28 seconds of continuous talking in a ten-second clip. A real
+  // 36-scene generation came back with exactly six turns in 33 of its scenes:
+  // the model was filling a quota it could not physically fit.
+  //
+  // These numbers are an ENVELOPE - what fits - never a target to reach.
   const lineLength = isYoung
-    ? "SIX TO TEN WORDS per line"
-    : "roughly EIGHT TO FOURTEEN WORDS per line";
+    ? "FOUR TO SEVEN WORDS per line"
+    : "roughly FIVE TO NINE WORDS per line";
 
   return `- A scene needs a PURPOSE, not necessarily a CONFLICT. A quiet everyday moment is valid when it reveals character, develops a relationship, establishes what normal looks like here, plants or pays off something, shifts an emotion, establishes a responsibility or builds anticipation. It is NOT valid when it merely depicts something realistic.
    - ONE PRIMARY EMOTIONAL BEAT PER SCENE. A short scene carries one feeling. A scene attempting two carries neither.
-   - LINE LENGTH: ${lineLength}. No speeches. Long lines wreck the pacing of a short shot and defeat lip-sync.
+   - ${buildSpeakabilityGuidance(ctx.language)}
+   - Talking scenes SHOULD be genuinely conversational - the fault being corrected is a narrator carrying the story while the characters manage two thin lines between them. Let them actually speak to each other, inside what the ten seconds can hold.
+   - ${buildPerformanceTypeGuidance()}
+   - ${buildChoreographyGuidance()}
+   - When two or more characters share a scene they must EXCHANGE, not take turns making statements. Someone asks, someone answers, someone cuts in, someone reacts. Interruptions, half-finished lines, quick agreements and small disagreements are what make a scene feel alive.
+   - LET THE CHARACTERS CARRY THE STORY, NOT A NARRATOR. Anything a narrator would explain, a character should say, ask or react to instead. Narration is a last resort for what genuinely cannot be spoken or shown.
+   - SOME SCENES ARE LEGITIMATELY NEAR-SILENT, and must not have dialogue pushed into them to hit a number: an establishing shot, a continuous physical action, a montage image, a suspense beat, a held look, a decision landing on a face, a final image. In those, speech is the exception and one line is often one too many.
+   - LINE LENGTH: ${lineLength}. No speeches. Many short lines, not few long ones - long lines wreck the pacing of a short shot and defeat lip-sync.
    - DIALOGUE REGISTER for this story: ${shape.dialogue}
    - OBEY EACH CHARACTER'S OWN VOICE RULE as defined in the blueprint's cast plan. Apply it mechanically and consistently in every line they speak.
    - VOICE TEST: with the speaker names removed, a reader must still know who is speaking. If two lines could be swapped between characters, rewrite them.
    - DO NOT have characters narrate their own emotions or explain the story's meaning. Show it in action, expression and behaviour.
+   - A REALISATION THE AUDIENCE MUST NOT HAVE YET STAYS UNSPOKEN. When a character works something out before the story is ready to reveal it, that understanding belongs on their FACE and in what they do next - never in a line. A real film had its ten-year-old ask, in the fourth shot, the exact question the whole film turns on answering three minutes later; spoken that early it handed the audience the ending and left the reveal with nothing to reveal. Before writing any line that voices private understanding, ask: does saying this out loud spend something the story has not reached yet? If it does, the character notices and says nothing. A held look costs one second and protects five minutes.
    - THE LESSON IS NEVER SPOKEN, and neither is the choice between the story's values. A line that weighs one value against another ("my X or my Y?") announces the theme just as plainly as stating it. Characters speak about the concrete situation in front of them, never about what it means.
    - THE LESSON IS NEVER SPOKEN. Before writing any line, apply this test: could this line appear in a one-sentence summary of what the story means? If yes, delete it and replace it with something the character DOES. This holds in every language - translating an explaining line does not fix it.
-   - Characters talk TO each other - asking, answering, reacting, deciding - never to the audience.${
+   - Characters talk TO each other - asking, answering, reacting, deciding - never to the audience.
+   - CONVERSATION CARRIES ACROSS THE JOIN: a question asked at the end of one scene can be answered at the start of the next; an argument can run through three scenes. Dialogue that continues over a cut is one of the strongest things making separate ten-second clips feel like one continuous film.${
      isFinalScene
        ? `
    - THIS IS THE FINAL SCENE. It is where summarising dialogue appears most often, so guard it hardest: no character may say what they learned, what matters most, or what the story was about. Close on a CHOICE, an ACTION, a REACTION or an IMAGE. Ordinary dialogue is still allowed - a question, a name, a small practical remark - as long as it does not tell the audience what to think.`
@@ -372,6 +474,7 @@ SHAPE FOR THIS MODE (${ctx.storyMode}):
 - DIALOGUE: ${shape.dialogue}
 
 ${buildEverydayLifeDoctrine(ctx)}
+${buildLifeJourneyDoctrine(ctx)}
 
 --------------------------------------------------
 ${UNIVERSAL_CRAFT}

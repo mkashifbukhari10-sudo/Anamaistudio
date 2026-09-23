@@ -1,3 +1,4 @@
+import { SHOT_LENGTH_LABEL, SHOT_LENGTH_PHRASE, SECONDS_PER_SCENE, formatTotalDuration } from '../shared/duration';
 import React, { useState } from 'react';
 import { ScenePlannerItem, CharacterBibleEntry, VeggieStory } from '../types';
 import {
@@ -207,14 +208,14 @@ ${scene.negativePrompt || ''}`;
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-2xl">🎬</span>
             <h3 className="font-bold text-base sm:text-xl text-slate-900 flex flex-wrap items-center gap-2">
-              <span>10-Second Scene Breakdown</span>
+              <span>{SHOT_LENGTH_PHRASE} Scene Breakdown</span>
               <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 whitespace-nowrap">
                 {scenes.length} Production Shots
               </span>
             </h3>
           </div>
           <p className="text-xs sm:text-sm text-slate-700 font-medium">
-            Each scene covers ~10 seconds with 1 primary visual action, strict Character Bible continuity, and ready Google Flow / Veo prompts.
+            Each scene covers ~{SECONDS_PER_SCENE} seconds with 1 primary visual action, strict Character Bible continuity, and ready Google Flow / Veo prompts.
           </p>
         </div>
 
@@ -251,7 +252,7 @@ ${scene.negativePrompt || ''}`;
               onRegenerateAllScenes();
             }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-bold transition-colors cursor-pointer border border-slate-300 shadow-2xs whitespace-nowrap"
-            title="Regenerate all 10-second scene plans using locked character bible"
+            title={`Regenerate all ${SHOT_LENGTH_PHRASE} scene plans using locked character bible`}
           >
             <RefreshCw
               className={`w-3.5 h-3.5 text-slate-700 ${
@@ -269,7 +270,7 @@ ${scene.negativePrompt || ''}`;
           <div className="flex flex-wrap items-center gap-2">
             <Clock className="w-4 h-4 text-emerald-600" />
             <h4 className="text-xs font-mono font-bold uppercase tracking-wider text-slate-800">
-              Timeline: {scenes.length} Scenes • ~10s Each ({Math.floor((scenes.length * 10) / 60)}:{String((scenes.length * 10) % 60).padStart(2, '0')} Total)
+              Timeline: {scenes.length} Scenes • ~{SHOT_LENGTH_LABEL} Each ({formatTotalDuration(scenes.length)} Total)
             </h4>
             {scenes.length >= 20 && (
               <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
@@ -390,7 +391,7 @@ ${scene.negativePrompt || ''}`;
                       </span>
 
                       <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 whitespace-nowrap">
-                        {scene.cameraShot || '10s Action Shot'}
+                        {scene.cameraShot || `${SHOT_LENGTH_LABEL} Action Shot`}
                       </span>
                     </div>
 
@@ -679,7 +680,7 @@ ${scene.negativePrompt || ''}`;
                               {scene.endState && (
                                 <div className="p-2.5 rounded-lg bg-white border border-teal-100 space-y-0.5">
                                   <span className="font-bold text-teal-950 block text-[10px] uppercase tracking-wider">
-                                    10.0s End State (Carries to Scene {scene.sceneNumber + 1}):
+                                    {SECONDS_PER_SCENE}.0s End State (Carries to Scene {scene.sceneNumber + 1}):
                                   </span>
                                   <p className="text-slate-800 leading-relaxed font-medium">{scene.endState}</p>
                                 </div>
@@ -782,7 +783,7 @@ ${scene.negativePrompt || ''}`;
                             onRegenerateSingleScene(scene.sceneNumber);
                           }}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-bold transition-colors cursor-pointer border border-slate-300 shadow-2xs"
-                          title="Regenerate this specific 10s shot while preserving continuity"
+                          title={`Regenerate this specific ${SHOT_LENGTH_LABEL} shot while preserving continuity`}
                         >
                           <RefreshCw
                             className={`w-3.5 h-3.5 ${

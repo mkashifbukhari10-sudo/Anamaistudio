@@ -304,6 +304,28 @@ export function resolveScenePlace(
 }
 
 /**
+ * Replace raw place ids with the place's human name in prose.
+ *
+ * A real generation wrote "place_kyari at the first light of morning" into the
+ * scene's Environment field, so an internal identifier reached the production
+ * package a reader sees. Ids belong in `placeId`; prose gets the name.
+ *
+ * An id with no matching place is still de-slugged ("place_back_wall" ->
+ * "back wall") rather than left raw - a stray identifier reads as a bug to
+ * anyone holding the export.
+ */
+export function scrubPlaceIds(text: unknown, registry: WorldRegistry | undefined | null): string {
+  const value = String(text ?? "");
+  if (!value || !/place_[a-z0-9_]+/i.test(value)) return value;
+
+  return value.replace(/place_[a-z0-9_]+/gi, (token) => {
+    const place = findPlace(registry, token);
+    if (place?.name) return place.name;
+    return token.replace(/^place_/i, "").replace(/_/g, " ");
+  });
+}
+
+/**
  * Resolve a free-text location to a registered place id.
  *
  * Scene output may name a place rather than reference its id. Matching by name

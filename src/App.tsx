@@ -1,3 +1,4 @@
+import { SHOT_LENGTH_PHRASE } from './shared/duration';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   StoryLanguage,
@@ -580,8 +581,15 @@ export default function App() {
   };
 
   const handleSelectStudioTab = (tab: StudioTab) => {
-    // With no story yet, the workspace stays on the setup workbench rather
-    // than falling back to demo content.
+    // Every workspace section renders from a generated story, so navigating
+    // without one would set the tab, leave the setup workbench on screen, and
+    // look like a dead click. The sidebar disables those items for the same
+    // reason; this is the guard behind it.
+    if (!generatedStory) return;
+
+    // Leaving the workbench and choosing the tab happen together - they are
+    // two halves of one navigation, and splitting them is what let the
+    // sidebar highlight a section the user was not looking at.
     setShowSetupWorkbench(false);
     setActiveStudioTab(tab);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -644,12 +652,23 @@ export default function App() {
           onNewStory={handleNewStorySetup}
           onOpenIdeas={() => {
             setShowSetupWorkbench(true);
-            const el = document.getElementById('story-topic-input');
-            if (el) el.focus();
+            // The topic field does not exist yet when the workbench was not
+            // already on screen - React has not rendered it. Focusing on the
+            // next frame is what makes this work from inside a story view.
+            requestAnimationFrame(() => {
+              const el = document.getElementById('story-topic-input');
+              if (el) {
+                el.focus();
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            });
           }}
           onOpenExportPackage={() => setIsPackageModalOpen(true)}
           hasActiveStory={!!generatedStory}
           story={generatedStory}
+          isSetupView={!generatedStory || showSetupWorkbench}
           isOpenMobile={isMobileSidebarOpen}
           onCloseMobile={() => setIsMobileSidebarOpen(false)}
         />
@@ -721,7 +740,7 @@ export default function App() {
                     )}
                   </div>
                   <p className="text-xs sm:text-sm text-slate-700 font-medium max-w-3xl leading-relaxed">
-                    Create meaningful, cinematic animated stories with dynamically sized vegetable characters, 18-point locked visual bibles, 10-second scene breakdowns, and ready-to-use Google Flow / Veo video generation prompts.
+                    Create meaningful, cinematic animated stories with dynamically sized vegetable characters, 18-point locked visual bibles, {SHOT_LENGTH_PHRASE} scene breakdowns, and ready-to-use Google Flow / Veo video generation prompts.
                   </p>
                 </div>
 
@@ -795,7 +814,7 @@ export default function App() {
                     <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-[11px] text-slate-700 mt-3 font-mono font-semibold">
                       <span className="whitespace-nowrap">✓ Dynamic Cast Sizing</span>
                       <span className="whitespace-nowrap">✓ 18-Point Visual Bible</span>
-                      <span className="whitespace-nowrap">✓ 10-Second Scene Breakdown</span>
+                      <span className="whitespace-nowrap">✓ {SHOT_LENGTH_PHRASE} Scene Breakdown</span>
                       <span className="whitespace-nowrap">✓ Google Flow / Veo Prompts</span>
                     </div>
                   </div>

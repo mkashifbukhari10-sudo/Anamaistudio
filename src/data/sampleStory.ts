@@ -1,3 +1,4 @@
+import { SECONDS_PER_SCENE } from '../shared/duration';
 import { VeggieStory } from '../types';
 
 export const SAMPLE_GAJAR_TAMATAR_STORY: VeggieStory = {
@@ -374,7 +375,7 @@ Golu Gajar ne bina dare apna haath aage badhaya. Usne kaha, "Tinku, mera haath p
       continuityIntoNext: sceneNum === 60 ? 'Final closing shot of the animated film' : `Seamlessly transitions character momentum into Scene ${sceneNum + 1}`,
       characterConsistencyNotes: 'Golu Gajar (denim overalls, 5-leaf crown) and Tinku Tamatar (round red, yellow neckerchief) 100% matched to Master Character Bible specifications.',
       visualDescription: `Scene #${sceneNum} (${timeRange}): ${action}`,
-      finalVideoPrompt: `Cinematic 3D children's animation shot (Scene ${sceneNum}, ~10s). ${cameraShot}, ${cameraMovement}. ${action} Characters: ${charsPresent.join(' and ')} in Cute 3D Pixar/Illumination style. ${lighting}. Setting: Sabzi Baag vegetable garden. Audio atmosphere: ${sound}. High fidelity render, crisp textures, locked character consistency standards for Google Flow and Veo.`,
+      finalVideoPrompt: `Cinematic 3D children's animation shot (Scene ${sceneNum}, ~${SECONDS_PER_SCENE}s). ${cameraShot}, ${cameraMovement}. ${action} Characters: ${charsPresent.join(' and ')} in Cute 3D Pixar/Illumination style. ${lighting}. Setting: Sabzi Baag vegetable garden. Audio atmosphere: ${sound}. High fidelity render, crisp textures, locked character consistency standards for Google Flow and Veo.`,
     };
   }),
 };

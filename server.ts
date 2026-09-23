@@ -10,6 +10,27 @@ import {
 import { generateText, generateImage, MAX_SCENES_PER_BATCH } from "./src/server/ai/index.js";
 import { registerAuthRoutes, requireAuth } from "./src/server/auth/index.js";
 import { buildSceneCraftRules } from "./src/server/story/story-craft.js";
+import { buildFeasibilityReport, wordEnvelope } from "./src/server/story/performance-budget.js";
+
+/**
+ * The speakability envelope at the default speaking rate.
+ *
+ * The scene schema is a module-level constant and has no request language, but
+ * every supported language runs at the same rate, so the default is the right
+ * number to quote there. Derived rather than written out, because the previous
+ * literals ("FOURTEEN TO TWENTY-TWO WORDS") silently became wrong the moment
+ * the shot length changed.
+ */
+const DEFAULT_WORD_ENVELOPE = wordEnvelope(undefined);
+import { buildBeatDensityReport, summariseBeatDensity } from "./src/server/story/beat-density.js";
+import { buildSceneContractReport, summariseContracts } from "./src/server/story/scene-contract.js";
+import { buildActionDensityReport } from "./src/server/story/action-density.js";
+import { buildQualityGateReport, summariseQualityGate } from "./src/server/story/quality-gate.js";
+import {
+  buildLifeJourney,
+  buildLifeJourneyReport,
+  summariseLifeJourney,
+} from "./src/server/story/life-journey.js";
 import {
   buildSocialContextForBible,
   buildSocialGraph,
@@ -22,17 +43,19 @@ import {
   buildWorldRegistry,
   completeEntityFacts,
   resolveScenePlace,
+  scrubPlaceIds,
   summariseWorldRegistry,
 } from "./src/server/story/world-registry.js";
 import { validateStoryFacts } from "./src/server/story/fact-validator.js";
-import { startCapture, endCapture, setCallContext } from "./src/server/ai/telemetry.js";
+import { startCapture, endCapture, setCallContext, attributionFrom } from "./src/server/ai/telemetry.js";
 import { startProgress, setPhase, setSceneProgress, getProgress, finishProgress } from "./src/server/progress.js";
 import { saveStoryReport } from "./src/server/dev/story-report.js";
-import type { WorldRegistry } from "./src/types.js";
+import type { LifeJourney, StoryScope, WorldRegistry } from "./src/types.js";
 import {
   buildLedger,
   buildLedgerBlock,
   enforceChainPlausibility,
+  isEmptyDialogue,
   normalizeContinuityState,
   normalizeSceneDialogue,
   reconcileHandoffs,
@@ -42,11 +65,32 @@ import {
 import {
   VIDEO_NEGATIVE_PROMPT,
   makeSelfContained,
+  ensureDialogueInPrompt,
+  stripSpeakerLabelsInQuotes,
   normalizeTransitionType,
-  buildFrameHandoff,
+
 } from "./src/server/story/prompt-continuity.js";
 import {
+  applyFrameBookends,
+  buildStyleLock,
+  buildSceneFrames,
+} from "./src/server/story/seam.js";
+import { buildBeatClock, renderBeatClock } from "./src/server/story/beat-clock.js";
+import { renderBystanders, idleBystanders } from "./src/server/story/bystanders.js";
+import {
+  openThreadOf,
+  flattenStateMap,
+  buildThreadBlock,
+} from "./src/server/story/seam-thread.js";
+import {
+  buildFrameHandoff,
+  buildReferenceAssets,
+  reconcileWorldText,
+  worldTextOf,
+} from "./src/server/story/frame-handoff.js";
+import {
   BLUEPRINT_SCHEMA,
+  buildBlueprintSchema,
   buildBlueprintPrompt,
   buildBlueprintPromptBlock,
   buildBlueprintSystemInstruction,
@@ -166,12 +210,89 @@ const SCENE_PROPERTIES = {
   chapterNumber: { type: Type.INTEGER, description: "Associated chapter number" },
   beatNumber: { type: Type.INTEGER, description: "Blueprint beat number this scene belongs to" },
   beatName: { type: Type.STRING, description: "Blueprint beat name this scene serves" },
+  contract: {
+    type: Type.OBJECT,
+    description:
+      "The scene's DRAMATIC CONTRACT: what it is trying to do and what materially changes because it exists. This is the machine-readable companion to 'storyFunction', which stays as the human-readable gloss.",
+    properties: {
+      goal: {
+        type: Type.STRING,
+        description:
+          "What the focal character or group is trying to accomplish DURING THIS SCENE. Not the whole-story goal - a scene-sized objective, e.g. 'get Mooli to hand over the tin before the others come back'.",
+      },
+      obstacle: {
+        type: Type.STRING,
+        description:
+          "What stops that being easy here. It may be internal (a fear, a habit), interpersonal (someone refuses), situational (no time, no money) or physical. A quiet scene does NOT need invented danger - reluctance, pride, embarrassment or a bad moment are real obstacles.",
+      },
+      outcome: {
+        type: Type.STRING,
+        description:
+          "What happened to the scene goal. One of: achieved, partial, denied, deferred, reversed. A story where everything is 'achieved' has no obstacles.",
+      },
+      performanceType: {
+        type: Type.STRING,
+        description:
+          "What kind of ten seconds this is: dialogue-scene, action, establishing, reaction, silent-emotional, montage-element, comedy-beat, transition. Classification of what the scene IS - it does not change how much dialogue the scene should carry.",
+      },
+      progression: {
+        type: Type.OBJECT,
+        description:
+          "The narrative VALUE that materially changes because this scene exists. This is the single most important field in the contract.",
+        properties: {
+          kind: {
+            type: Type.STRING,
+            description:
+              "One of: information, decision, consequence, relationship, emotional, obstacle, discovery, escalation, setup, payoff, reversal, progress, setback.",
+          },
+          value: {
+            type: Type.STRING,
+            description:
+              "The thing that changes, named for this story: 'trust between Mooli and Golu', 'the fee', 'what Gajar knows about the ledger', 'hope'.",
+          },
+          before: {
+            type: Type.STRING,
+            description: "Where that value stands when the scene opens.",
+          },
+          after: {
+            type: Type.STRING,
+            description:
+              "Where the SAME value stands when the scene ends. It must be a different STATE of that value, not a different event. CORRECT: value 'trust', before 'guarded', after 'slightly restored'. WRONG: before 'Golu enters the room', after 'Golu talks to Mooli' - those are two activities, and the scene has changed nothing. A SMALL change is completely valid; an absent one is not.",
+          },
+        },
+        required: ["kind", "value", "before", "after"],
+      },
+      repetitionIntent: {
+        type: Type.OBJECT,
+        description:
+          "OPTIONAL, and rare. Include ONLY when this scene deliberately echoes an EARLIER one - a callback, a montage element, a parallel scene, a running gag, a ritual. Declaring this does not switch off repetition checks: a declaration that points forward, names a scene that does not exist, or cannot say what differs is ignored, and even a valid one is withdrawn if the two scenes turn out near-identical.",
+        properties: {
+          kind: {
+            type: Type.STRING,
+            description: "One of: callback, montage-element, parallel-scene, running-gag, ritual.",
+          },
+          echoesScene: {
+            type: Type.INTEGER,
+            description: "The EARLIER scene number this echoes. Must be smaller than this scene's number.",
+          },
+          variation: {
+            type: Type.STRING,
+            description:
+              "REQUIRED. What is materially DIFFERENT this time - a reversed outcome, a changed relationship, a year having passed, nobody watching. Recurrence works through variation; an unchanged repeat is the same scene twice.",
+          },
+        },
+        required: ["kind", "echoesScene", "variation"],
+      },
+    },
+    required: ["goal", "obstacle", "outcome", "performanceType", "progression"],
+  },
   storyFunction: {
     type: Type.STRING,
     description:
       "What this scene ACHIEVES. At least one of: a fact learned; a relationship shifted; a decision taken; a resource gained or lost; a character revealed; what is normal here established; a setup planted or paid off; an emotion changed; a responsibility established; anticipation built. A quiet everyday scene qualifies easily on this list. A scene that achieves NONE of them is filler - depicting something merely because it is realistic does not count - and must be rewritten.",
   },
   setupOrPayoff: { type: Type.STRING, description: "Foreshadowing planted or paid off here, or 'None'" },
+  openThread: { type: Type.STRING, description: "What is still HANGING as this shot ends - a question asked and not answered, a line cut off, a look held, an offer not yet accepted, a decision not yet made. The next scene inherits it and should engage it. Write 'None' when the scene closes its beat cleanly, which is correct at an act break, a time jump or a resolution - not every shot should end on a hook, and a hook at every join is its own kind of mechanical writing." },
   chapterTitle: { type: Type.STRING, description: "Associated chapter title" },
   purpose: { type: Type.STRING, description: "Narrative beat purpose" },
   charactersPresent: {
@@ -179,21 +300,39 @@ const SCENE_PROPERTIES = {
     items: { type: Type.STRING },
     description: "Array of vegetable characters in this shot",
   },
-  characterActions: { type: Type.STRING, description: "Exactly ONE primary visual action in this 10-second shot" },
+  characterActions: { type: Type.STRING, description: `Exactly ONE primary visual action in this ${SECONDS_PER_SCENE}-second shot` },
+  worldText: { type: Type.STRING, description: "Any writing that must appear IN FRAME - a banner, a sign, a price, a label - quoted exactly as it should read, or 'None'. If the same sign appears in several scenes, write it IDENTICALLY every time: rendered lettering is the least stable thing the video model produces, and the only defence is restating it word for word." },
   facialExpressions: { type: Type.STRING, description: "Eye and mouth expressions and emotional state carrying forward" },
+  bystanders: {
+    type: Type.ARRAY,
+    description: "For every character who is PRESENT but does not speak in this scene: what they are doing while the others talk or act. Leave EMPTY when a character is alone on screen, or when everyone present speaks. A character standing in frame with nothing planned renders as a statue - which is what was happening.",
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        character: { type: Type.STRING },
+        doing: { type: Type.STRING, description: "Their physical behaviour and where their attention is - listening, looking away, working, reacting." },
+      },
+      required: ["character", "doing"],
+    },
+  },
   dialogue: { type: Type.STRING, description: "Multi-character spoken conversation formatted with speaker names, e.g. <Character A>: \"...\" \\n <Character B>: \"...\" in target language, or 'None / Visual Action'" },
   dialogueTurns: {
     type: Type.ARRAY,
-    description: "Multi-character dialogue turns with speaker, line, facialExpression, and accompanyingAction",
+    description:
+      `The scene's conversation, turn by turn, with speaker, line, facialExpression and accompanyingAction. SPEAKABILITY CEILING: spoken delivery runs about three words a second and a ${SECONDS_PER_SCENE}-second shot also needs breath, reaction and action, so a talking scene holds roughly ${DEFAULT_WORD_ENVELOPE.comfortable} WORDS comfortably and ${DEFAULT_WORD_ENVELOPE.ceiling} at the absolute ceiling. This is what FITS, not a target: a scene that plays better on one line should have one, and establishing shots, action beats, montage, suspense and moments of stillness are legitimately silent. Dialogue beyond the ceiling cannot be performed in the clip.`,
     items: {
       type: Type.OBJECT,
       properties: {
         speaker: { type: Type.STRING },
         line: { type: Type.STRING },
-        facialExpression: { type: Type.STRING },
-        accompanyingAction: { type: Type.STRING },
+        facialExpression: { type: Type.STRING, description: "What this speaker's face does ON this line - the brow, the eyes, the mouth." },
+        accompanyingAction: { type: Type.STRING, description: "What the speaker is physically DOING while saying this line, and what the LISTENER does in response - the glance away, the hands, the step back. A line with nobody reacting to it renders as talking statues." },
       },
-      required: ["speaker", "line"],
+      // facialExpression and accompanyingAction used to be optional, and the
+      // model duly omitted them: across a real 36-scene generation not one turn
+      // carried either. That is why listeners stood still - nothing ever planned
+      // what they were doing while somebody else spoke.
+      required: ["speaker", "line", "facialExpression", "accompanyingAction"],
     },
   },
   environment: { type: Type.STRING, description: "Setting, backdrop, weather, lighting" },
@@ -209,7 +348,7 @@ const SCENE_PROPERTIES = {
   characterConsistencyNotes: { type: Type.STRING, description: "Locked Character Bible wardrobe and color checklist" },
   visualDescription: { type: Type.STRING, description: "Short 1-sentence visual summary" },
   startState: { type: Type.STRING, description: "Exact visual starting state inheriting Scene N-1 endState (positions, poses, held props, lighting)" },
-  endState: { type: Type.STRING, description: "Exact visual ending state at 10.0s (positions, held props, open/closed doors, expressions)" },
+  endState: { type: Type.STRING, description: `Exact visual state at the instant this shot ends (positions, poses, held props, open/closed doors, expressions, lighting, camera). Write it as a still image in the present tense, with NO timestamp and NO mention of any scene number - this exact text becomes both this shot's closing frame and the next shot's opening frame, so it must read correctly as an ending AND as a beginning.` },
   nextSceneHandoff: { type: Type.STRING, description: "Specific visual & physical handoff contract that MUST be inherited by Scene N+1" },
   continuityState: {
     type: Type.OBJECT,
@@ -271,6 +410,7 @@ const SCENE_PROPERTIES = {
       weather: { type: Type.STRING, description: "Weather at the final frame" },
       lighting: { type: Type.STRING, description: "Lighting direction, colour temperature and intensity at the final frame" },
       environmentState: { type: Type.STRING, description: "Anything changed about the environment that later scenes must respect" },
+      backgroundCast: { type: Type.STRING, description: "The background population at the final frame - a watching crowd, passers-by, animals - described the SAME way every scene they appear in, or 'None'. An unnamed crowd that is not restated gets re-invented in the next shot." },
       camera: {
         type: Type.OBJECT,
         description: "Where the camera is and what it is doing as the shot ends.",
@@ -311,7 +451,7 @@ const SCENE_PROPERTIES = {
   },
   finalVideoPrompt: {
     type: Type.STRING,
-    description: "Self-contained English prompt for Google Flow/Veo. Opens by describing the exact first frame in absolute terms (each character's screen position, pose, held props, eyeline, expression) - NEVER by referring to another scene. Positive description only, no negation words.",
+    description: "Self-contained English prompt for Google Flow/Veo, and NEVER a reference to another scene. Do NOT write an opening or closing frame - both are attached automatically from 'endState' so that this shot's closing frame and the next shot's opening frame are the same text; write only the body: animation style and palette, the full locked visual description of every character present, ONE continuous action, motivated camera movement, lighting and colour temperature, Foley and score. Must QUOTE every line from dialogueTurns verbatim with its speaker, in order - Flow speaks only what the prompt actually says, so summarising the conversation produces a silent clip. Positive description only, no negation words.",
   },
 };
 
@@ -322,6 +462,7 @@ const REQUIRED_SCENE_FIELDS = [
   "purpose",
   "beatNumber",
   "storyFunction",
+  "contract",
   "charactersPresent",
   "characterActions",
   "facialExpressions",
@@ -344,6 +485,14 @@ const REQUIRED_SCENE_FIELDS = [
   "continuityState",
   "transitionType",
   "finalVideoPrompt",
+  // Required so the model has to decide, with "None" as a valid answer. The
+  // fields left optional in this schema - facialExpression and
+  // accompanyingAction - were omitted in 100% of turns, which is what made
+  // listeners stand still. 'bystanders' is deliberately NOT required: an empty
+  // cast is the correct answer for a solo scene, and demanding the key invites
+  // the model to invent company.
+  "openThread",
+  "worldText",
 ];
 
 // Helper to generate a batch of scenes for a given range with continuous film handoffs
@@ -372,6 +521,8 @@ async function generateScenesBatch(
       heldProps?: string;
       characterPositions?: string;
       characterEmotions?: string;
+      /** The dramatic question the previous scene left open, if any. */
+      openThread?: string;
     } | null;
     blueprint?: any;
     storyMemory?: any;
@@ -406,7 +557,7 @@ async function generateScenesBatch(
   const startTime = formatTimeRange(startScene).split("–")[0].trim();
   const endTime = formatTimeRange(endScene).split("–")[1].trim();
 
-  const systemInstruction = `You are a world-class children's animation director and cinematographer directing consecutive 10-second shots for the animated film "${title}".
+  const systemInstruction = `You are a world-class children's animation director and cinematographer directing consecutive ${SECONDS_PER_SCENE}-second shots for the animated film "${title}".
 Animation Style: ${animationStyle}
 Story Mode: ${storyMode}
 Language: ${language}
@@ -441,12 +592,33 @@ MANDATORY CONTINUITY & SHOT-TO-SHOT LAWS:
 5. NATURAL MULTI-CHARACTER CONVERSATIONAL INTELLIGENCE:
    - When 2 or more characters are present, distribute dialogue naturally with speaker prefixes (e.g. "<Character A>: \\"...\\" \\n <Character B>: \\"...\\"").
    - Characters must talk TO each other: asking questions, answering, reacting emotionally, giving suggestions, and expressing care.
+   - WHEN A SCENE TALKS, LET IT BE A REAL CONVERSATION. A ${SECONDS_PER_SCENE}-second shot holds about ${wordEnvelope(language).comfortable} spoken words comfortably and ${wordEnvelope(language).ceiling} at the ceiling - so the weight of a talking scene is set by that budget, not by a turn quota. Two lines and a narrator describing the rest is the most common way these scenes come out flat: the people in the scene should be doing the talking. Spend the budget on an EXCHANGE - a question and its answer, an interruption, a correction - rather than on one character making a longer speech.
 ${buildSceneCraftRules({ storyMode, targetSceneCount: totalScenes, duration, language, includesFinalScene: endScene >= totalScenes })}
    - Synchronize physical movement with speech: each character's line matches what they are physically doing and their facial expressions. Populate 'dialogueTurns'.
+   - NO MECHANICAL VARIETY. Do not alternate performance types, locations, cast sizes or conflict levels on a rotation to make the timeline look varied. Variety that comes from a pattern reads as mechanical and is its own kind of repetition. Every choice comes from what THIS scene needs.
+   - Not every scene needs dialogue. Not every scene needs a new location. Not every scene needs more than one character. Not every scene needs a reversal, and not every scene needs conflict at the same intensity. Small genuine progression is valid and is often what a good film is mostly made of.
 6. GOOGLE FLOW / VEO VIDEO PROMPT REQUIREMENTS (SELF-CONTAINED - CRITICAL):
    - Each 'finalVideoPrompt' is pasted into Google Flow / Veo ON ITS OWN. The model has NO memory of any other scene and CANNOT see the previous shot. NEVER write "continue from previous shot", "same as before", "as established", "inherit", "unchanged", or any reference to another scene number. Such references are silently ignored and waste the prompt.
-   - OPEN every prompt by describing the exact FIRST FRAME in ABSOLUTE terms: each character's screen position (frame left / centre / frame right), body pose, what each hand is holding, head direction and eyeline, and facial expression. For Scene N > 1 this opening description MUST restate the previous scene's 'endState' IN FULL, spelled out as fresh description - never as a reference.
-   - Then describe ONE continuous ${SECONDS_PER_SCENE}-second action, motivated camera movement, lighting direction and colour temperature, synchronized dialogue in ${language}, Foley sound effects, and the exact CLOSING frame.
+   - DO NOT WRITE THE OPENING OR CLOSING FRAME YOURSELF. Both are attached automatically, word for word, from 'endState' - this scene's closing frame and the next scene's opening frame are THE SAME TEXT, which is what makes two clips join. Writing your own version of either frame creates a second, competing description of the same instant and breaks the join. Never begin the prompt with "Opening frame", "First frame", "At ${SECONDS_PER_SCENE}.0s" or any restatement of where the shot starts, and never end it with "Closing frame" or "Final frame".
+   - PUT YOUR CARE INTO 'endState' INSTEAD. It is the frame two clips share, so it carries the whole burden of continuity: every character's screen position (frame left / centre / frame right), body pose, what each hand is holding, head direction and eyeline, facial expression, what is resting in the world, lighting, and where the camera is. Write it as a still image in the present tense with no timestamp and no scene number, so it reads correctly both as this shot's ending and as the next shot's beginning.
+   - DO NOT WRITE THE STYLE SENTENCE YOURSELF. The film's visual style is attached automatically, word for word, to EVERY prompt in the film. Each batch is a separate completion that cannot see the prose the other batches chose, so a style line written here comes out differently in each batch - a real generation opened with "Stylized 3D cartoon animation" for scenes 1-12, "Children's 3D cartoon animation style" for 13-24 and "Stylized cartoon 3D animation" for 25-36, and rendered as three visually different films joined at 2:00 and 4:00. Never begin the prompt with the animation style, a render technique, an art-style label or a palette summary. START WITH THE CONTENT: the place, the camera, or the character.
+   - The prompt body you DO write is: the full locked visual description of every character present, ONE continuous ${SECONDS_PER_SCENE}-second action with the dialogue quoted inside it, motivated camera movement, lighting direction and colour temperature, Foley sound effects, and score.
+   - CARRY THE CONVERSATION ACROSS THE JOIN. Every scene records 'openThread': whatever is still hanging as it ends - a question asked and not answered, a line cut off, a held look, an offer not taken. The NEXT scene inherits it and must engage it: answer it, refuse it, interrupt it, or have someone deliberately change the subject. A story where every scene opens a new topic and closes it reads as a set of separate clips, which is the exact fault being fixed. Set it to 'None' when the scene genuinely closes its beat - at an act break, a time jump, or a resolution. A hook at EVERY join is as mechanical as none at all.
+   - EVERY PERSON ON SCREEN IS DOING SOMETHING. For each spoken turn, 'accompanyingAction' must say what the SPEAKER does while saying it AND what the LISTENER does in response - the glance away, the hands, the half-step back. 'accompanyingAction' MUST NOT RESTATE A BEAT ALREADY WRITTEN IN 'characterActions'. Both fields are assembled into ONE timeline for the shot, so a beat written in both is scheduled TWICE inside the same ${SECONDS_PER_SCENE} seconds - a measured third of all spoken turns across two real films did exactly this, producing clips told to shut the same door twice and to point at the same mat twice. 'characterActions' carries the shot's physical progression; 'accompanyingAction' carries only what that progression does not already say - the speaker's face, hands and posture WHILE the line is spoken, and the listener's reaction to hearing it. If the only thing you would write there is the beat again, write the LISTENER instead. For anyone present who never speaks in the scene, fill 'bystanders' with what they are doing and where their attention is. Leave 'bystanders' empty only when a character is alone or when everyone present speaks. A character standing in frame with nothing planned is rendered standing still.
+   - WRITING IN FRAME: if the shot shows a banner, sign, price, label or any other readable text, put the exact wording in 'worldText'. Rendered lettering is the least stable thing the video model produces, so whenever that same sign appears again in a later scene, write it CHARACTER FOR CHARACTER the same. Do not paraphrase it, do not translate it, do not shorten it. If the shot shows no writing, set it to 'None' - inventing signage gives the model something new to garble.
+   - BACKGROUND POPULATION: if a crowd, passers-by or animals are present, record them in 'continuityState.backgroundCast' and describe them the SAME way in every scene they appear in. An unnamed crowd is re-invented from scratch in the next shot.
+   - A BEAT CLOCK is attached automatically, timing every action beat and every spoken line across the ${SECONDS_PER_SCENE} seconds. It is built from 'characterActions' and 'dialogueTurns', so write those as an ORDERED sequence: put the beats in the order they happen, separated by "then" (or the equivalent in ${language}), and put 'dialogueTurns' in the order the lines are spoken. A scene whose action is one unbroken move is fine and stays one beat - do not chop a continuous action into steps to make the clock longer.
+   - QUOTE THE DIALOGUE IN FULL inside the prompt: every line from 'dialogueTurns', word for word, attributed to its speaker, in the order spoken, in ${language}. Flow generates speech from the prompt text alone - writing "they talk excitedly" or "a short exchange follows" produces a clip with no speech at all. Say who says what.
+   - WRITE THE PROMPT AS THE KIND OF SCENE IT IS. The prompt must deliver the performance the 'performanceType' promises:
+     - dialogue-scene: the spoken lines, PLUS what each listener is doing while the other speaks - the reaction, the hands, the glance away. A prompt that lists only speech produces talking statues.
+     - action: one continuous, readable physical progression with a clear start and end position. Little or no speech.
+     - establishing: a motivated camera move across the space, and the one thing the shot is there to establish. Do not invent dialogue for it.
+     - reaction: a held face and what moves on it. Do not add speech to explain the reaction.
+     - silent-emotional: visual performance and held emotion. NO invented dialogue - a scene with no 'dialogueTurns' must stay silent in the prompt too.
+     - montage-element: one compressed image, distinct from the other montage images.
+     - comedy-beat: setup, the timing gap, then the payoff. Protect the pause; do not fill it with words.
+     - transition: the movement through place or time, and what has changed by the end of it.
+   - NEVER add spoken lines to a prompt for a scene that has no 'dialogueTurns'. Silence is a decision the scene already made.
    - Restate the full locked visual description of EVERY character present, word-for-word from the Character Bible, in EVERY prompt. This repetition is required, not redundant - it is the only thing holding character identity stable across independent generations.
    - Write ONLY positive description. NEVER use "avoid", "no", "without", "not", or any other negation - negative constraints are delivered separately in a dedicated field and negation in a positive prompt tends to summon what it names.
    - Set 'transitionType' by judging what the ACTION does at the boundary. CHAIN when a single continuous movement or moment carries on past the ten-second mark in the same place with no time gap - the two clips must read as one unbroken take. CUT when the scene changes place, angle or moment. Do not treat CHAIN as exceptional: whenever an action genuinely spans the boundary, mark it CHAIN so the join can be made seamless. When it is truly ambiguous, choose CUT. Scene 1 is always CUT.`
@@ -470,6 +642,7 @@ CRITICAL PREVIOUS SCENE CONTINUITY (Scene #${previousSceneContext.sceneNumber} J
 ${previousSceneContext.heldProps ? `- Held Props: ${previousSceneContext.heldProps}` : ""}
 ${previousSceneContext.characterPositions ? `- Screen Positions: ${previousSceneContext.characterPositions}` : ""}
 ${previousSceneContext.characterEmotions ? `- Emotional State: ${previousSceneContext.characterEmotions}` : ""}
+${buildThreadBlock(previousSceneContext)}
 
 YOUR SCENE #${startScene} START STATE MUST EXACTLY INHERIT AND CONTINUE FROM THIS PREVIOUS STATE!
 `;
@@ -481,7 +654,7 @@ YOUR SCENE #${startScene} START STATE MUST EXACTLY INHERIT AND CONTINUE FROM THI
     continuityContextPrompt += `\n${ledgerBlock}\n`;
   }
 
-  const prompt = `Generate sequential 10-second shots for Scene ${startScene} to Scene ${endScene} (covering ${startTime} to ${endTime} of the ${totalScenes}-scene (${duration}) timeline).
+  const prompt = `Generate sequential ${SECONDS_PER_SCENE}-second shots for Scene ${startScene} to Scene ${endScene} (covering ${startTime} to ${endTime} of the ${totalScenes}-scene (${duration}) timeline).
 
 STORY TITLE: ${title}
 TOPIC: ${topic}
@@ -612,6 +785,11 @@ async function runSceneBatchPipeline(params: {
   const buildPreviousContext = () => {
     const last = scenes.length > 0 ? scenes[scenes.length - 1] : null;
     if (!last) return null;
+    // heldProps, characterPositions and characterEmotions were declared on the
+    // context type but never populated here, so the "Emotional State" and
+    // "Screen Positions" lines never appeared in any prompt. The next batch
+    // inherited where the bodies were and nothing about what they felt.
+    const cs = last.continuityState || {};
     return {
       sceneNumber: last.sceneNumber,
       endState: last.endState || last.characterActions,
@@ -620,6 +798,10 @@ async function runSceneBatchPipeline(params: {
       environment: last.environment,
       lighting: last.lighting,
       props: last.props,
+      heldProps: flattenStateMap(cs.heldProps),
+      characterPositions: flattenStateMap(cs.characterPositions),
+      characterEmotions: flattenStateMap(cs.characterEmotions),
+      openThread: openThreadOf(last),
     };
   };
 
@@ -737,6 +919,13 @@ function validateAndStandardizeTimeline(
   }
 ): any[] {
   const { title, language, animationStyle, chapters, characters, worldRegistry } = storyContext;
+
+  // One wording per sign, before any prompt is assembled. Each batch writes
+  // 'worldText' without seeing the others, so a banner established in one scene
+  // comes back paraphrased in the next - and the video model renders a
+  // paraphrase as a different sign.
+  reconcileWorldText(rawScenes);
+
   const validScenes: any[] = [];
   const sceneMap = new Map<number, any>();
 
@@ -785,7 +974,7 @@ function validateAndStandardizeTimeline(
       }
 
       if (!scene.endState) {
-        scene.endState = `At 10.0s mark: ${scene.characterActions}. Characters hold finishing posture for Scene ${num + 1} handoff.`;
+        scene.endState = `${scene.characterActions}. Characters hold the finishing posture.`;
       }
 
       if (!scene.nextSceneHandoff) {
@@ -803,8 +992,30 @@ function validateAndStandardizeTimeline(
         scene.continuityIntoNext = num < targetSceneCount ? `Transitions into Scene ${num + 1} (${formatTimeRange(num + 1)})` : "Final resolution";
       }
 
-      // Parse dialogueTurns if not present
+      // Parse dialogueTurns if not present.
+      //
+      // Splitting on the first colon is how a "Name: line" script is read, but
+      // it will happily split a SENTENCE at its colon too. A real generation
+      // wrote "None / Visual Action - ten wordless seconds. The only voice is
+      // Foley: the dry snap, the fall and the hush." and produced a speaker
+      // named after the whole first clause, which would have shipped to Flow as
+      // spoken dialogue. The speaker is therefore validated against the cast:
+      // if nobody by that name is in this film, it was never dialogue.
       if (!Array.isArray(scene.dialogueTurns) || scene.dialogueTurns.length === 0) {
+        const knownNames = [
+          ...(scene.charactersPresent || []),
+          ...(characters || []).map((c: any) => c?.name),
+        ]
+          .map((n: any) => String(n || "").trim().toLowerCase())
+          .filter(Boolean);
+
+        const isKnownSpeaker = (name: string): boolean => {
+          const candidate = name.trim().toLowerCase();
+          if (!candidate || candidate.length > 40) return false;
+          if (knownNames.length === 0) return candidate.length <= 40;
+          return knownNames.some((known) => known === candidate || known.includes(candidate) || candidate.includes(known));
+        };
+
         const turns: any[] = [];
         const rawLines = (scene.dialogue || "").split("\n").map((l: string) => l.trim()).filter(Boolean);
         rawLines.forEach((line: string) => {
@@ -812,6 +1023,7 @@ function validateAndStandardizeTimeline(
           if (colonIdx > 0) {
             const spk = line.substring(0, colonIdx).trim().replace(/^[\*\-_]+|[\*\-_]+$/g, "");
             const speech = line.substring(colonIdx + 1).trim().replace(/^["']|["']$/g, "");
+            if (!isKnownSpeaker(spk) || isEmptyDialogue(speech)) return;
             turns.push({
               speaker: spk,
               line: speech,
@@ -820,9 +1032,10 @@ function validateAndStandardizeTimeline(
             });
           }
         });
+
         if (turns.length > 0) {
           scene.dialogueTurns = turns;
-        } else if (scene.dialogue && scene.dialogue !== "None / Visual Action") {
+        } else if (scene.dialogue && !isEmptyDialogue(scene.dialogue)) {
           scene.dialogueTurns = [{
             speaker: scene.charactersPresent?.[0] || charName,
             line: scene.dialogue.replace(/^["']|["']$/g, ""),
@@ -853,14 +1066,62 @@ function validateAndStandardizeTimeline(
         if (resolved.corrected && resolved.reason) {
           console.log(`[World] Scene ${num}: ${resolved.reason}.`);
         }
+
+        // Ids are for the engine; the production package is read by people.
+        scene.continuityState.location = scrubPlaceIds(scene.continuityState.location, worldRegistry);
+        scene.continuityState.environmentState = scrubPlaceIds(scene.continuityState.environmentState, worldRegistry);
+      }
+
+      if (worldRegistry) {
+        scene.environment = scrubPlaceIds(scene.environment, worldRegistry);
+        scene.visualDescription = scrubPlaceIds(scene.visualDescription, worldRegistry);
+        scene.startState = scrubPlaceIds(scene.startState, worldRegistry);
+        scene.endState = scrubPlaceIds(scene.endState, worldRegistry);
+        scene.nextSceneHandoff = scrubPlaceIds(scene.nextSceneHandoff, worldRegistry);
+        scene.finalVideoPrompt = scrubPlaceIds(scene.finalVideoPrompt, worldRegistry);
       }
 
       // Strip any cross-scene reference the model emitted anyway. Flow renders
       // each clip with no memory of the others, so a phrase like "continue from
-      // the previous shot" is dead weight at best; the opening frame has to be
-      // restated absolutely instead.
+      // the previous shot" is dead weight at best; the frames attached below
+      // state the boundary absolutely instead.
       if (scene.finalVideoPrompt) {
-        scene.finalVideoPrompt = makeSelfContained(scene.finalVideoPrompt, prevScene);
+        scene.finalVideoPrompt = makeSelfContained(scene.finalVideoPrompt);
+        // Flow speaks whatever is inside the quotes, so a speaker label that
+        // landed in there would be said out loud before the line.
+        scene.finalVideoPrompt = stripSpeakerLabelsInQuotes(
+          scene.finalVideoPrompt,
+          (characters || []).map((c) => c?.name).filter(Boolean)
+        );
+        // Flow speaks only what the prompt says. A scene whose conversation
+        // survives in dialogueTurns but got summarised out of the prompt would
+        // render as a silent clip, so the lines are restored explicitly.
+        // Runs BEFORE the bookends so a recovered dialogue block lands inside
+        // the body and the closing frame stays the last thing in the prompt.
+        scene.finalVideoPrompt = ensureDialogueInPrompt(
+          scene.finalVideoPrompt,
+          scene.dialogueTurns,
+          language
+        );
+        // SEAM IDENTITY: this scene's closing frame and the next scene's
+        // opening frame are rendered from the same text, so the two clips
+        // describe the boundary identically instead of one side being
+        // specified six times more precisely than the other.
+        // BEAT CLOCK: without one, Flow receives ten seconds as an
+        // undifferentiated paragraph and paces it arbitrarily - the direct
+        // cause of dead time and of conversations rushed into two seconds.
+        // Kept on the scene, not just rendered: the clock knows whether the
+        // content fits the shot, and nothing consumed that until the gate did.
+        scene.beatClock = buildBeatClock(scene, language);
+        scene.finalVideoPrompt = applyFrameBookends(scene.finalVideoPrompt, {
+          ...buildSceneFrames(scene, prevScene),
+          clock: renderBeatClock(scene.beatClock),
+          worldText: worldTextOf(scene),
+          bystanders: renderBystanders(scene),
+          // Derived from the film-level style, so all three batches emit the
+          // same sentence instead of three competing ones.
+          style: buildStyleLock(animationStyle),
+        });
       }
     }
 
@@ -868,10 +1129,13 @@ function validateAndStandardizeTimeline(
     // negative prompt box - never appended to the positive prompt.
     scene.negativePrompt = VIDEO_NEGATIVE_PROMPT;
 
-    // Classify the join and emit the operator's frame-upload step.
+    // Classify the join and emit the operator's frame-upload step. A cut that
+    // stays in the same place with the same cast now asks for the previous
+    // frame as an identity reference - that join is where faces, in-frame text
+    // and background crowds were measurably drifting.
     const transitionType = normalizeTransitionType(scene.transitionType, !prevScene);
     scene.transitionType = transitionType;
-    scene.frameHandoff = buildFrameHandoff(transitionType, prevScene?.sceneNumber);
+    scene.frameHandoff = buildFrameHandoff(transitionType, scene, prevScene);
 
     // Assign Transition Contract (Part 11)
     scene.transitionContract = {
@@ -1003,6 +1267,7 @@ export function createApp(options: CreateAppOptions = {}) {
         customMinutes,
         animationStyle,
         characterCount,
+        storyScope,
         lockedCharacters,
       } = req.body;
 
@@ -1051,6 +1316,10 @@ export function createApp(options: CreateAppOptions = {}) {
       // ==========================================
       // 'Auto' / absent normalises to undefined, restoring runtime-based sizing.
       const selectedCharacterCount = normalizeCharacterCount(characterCount);
+      // Time shape. Anything unrecognised falls back to Auto, which is the
+      // behaviour that existed before the life-journey layer.
+      const selectedScope: StoryScope =
+        storyScope === "Single Episode" || storyScope === "Life Journey" ? storyScope : "Auto";
       const castTarget = targetCastSize(targetSceneCount, selectedCharacterCount);
       const beatTarget = targetBeatCount(targetSceneCount);
       console.log(
@@ -1068,6 +1337,7 @@ export function createApp(options: CreateAppOptions = {}) {
         targetSceneCount,
         numChapters,
         characterCount: selectedCharacterCount,
+        storyScope: selectedScope,
         // Opt-in only. With nothing sent, the cast is invented for this topic.
         lockedCharacters:
           lockedCharacters && Array.isArray(lockedCharacters) && lockedCharacters.length > 0
@@ -1084,7 +1354,7 @@ export function createApp(options: CreateAppOptions = {}) {
           systemInstruction: buildBlueprintSystemInstruction(blueprintContext),
           temperature: 0.8,
           responseMimeType: "application/json",
-          responseSchema: BLUEPRINT_SCHEMA,
+          responseSchema: buildBlueprintSchema({ targetSceneCount, storyScope: selectedScope }),
         },
       });
 
@@ -1125,12 +1395,40 @@ export function createApp(options: CreateAppOptions = {}) {
       }
       narrativeBlueprint.worldRegistry = worldRegistry;
 
+      // The OPTIONAL time-spanning plan. Normalisation derives every phase's
+      // scene range from the beats in its chapters and rebuilds the jump list
+      // from the phase boundaries, so phases never become a second source of
+      // truth alongside beats and chapters. Anything unusable returns
+      // undefined and the story simply runs as one continuous episode - which
+      // is the normal, correct outcome for most stories.
+      const { journey: lifeJourney, issues: lifeJourneyIssues } = buildLifeJourney({
+        raw: narrativeBlueprint.lifeJourney,
+        beats: blueprintBeats,
+        chapters: narrativeBlueprint.chapters,
+        targetSceneCount,
+        scope: selectedScope,
+      });
+      narrativeBlueprint.lifeJourney = lifeJourney;
+
+      // Beat density, measured BEFORE a single scene is generated. Stretching
+      // is decided here, in the scene allocation, and executed faithfully
+      // downstream - so this is the only place it can be caught early enough
+      // to be worth reporting. Report only: reallocating a beat is a creative
+      // decision, never a code one.
+      const beatDensity = buildBeatDensityReport({
+        beats: blueprintBeats,
+        targetSceneCount,
+      });
+      narrativeBlueprint.beatDensity = beatDensity;
+
       console.log(
         `[Phase 1A] Blueprint ready: ${blueprintCast.length} characters, ${blueprintBeats.length} beats, ` +
           `${(narrativeBlueprint.setups || []).length} setups, ${(narrativeBlueprint.relationships || []).length} relationship arcs.`
       );
       console.log(`[Social] ${summariseSocialGraph(socialGraph)}.`);
       console.log(`[World] ${summariseWorldRegistry(worldRegistry)}.`);
+      console.log(`[Journey] ${summariseLifeJourney(lifeJourney)}.`);
+      console.log(`[Beat density] ${summariseBeatDensity(beatDensity)}.`);
 
       const phase1SystemInstruction = `You are a master children's animation director and screenplay writer (Pixar / Illumination quality).
 You are creating the master screenplay, narrative, and Character Bible for a ${selectedDuration} (~${targetSceneCount} scenes) animated vegetable story.
@@ -1175,7 +1473,7 @@ LANGUAGE: If "Hindi", write story, dialogues, moral in Devanagari Hindi. If "Urd
       let phase1Prompt = `Create the master screenplay and Character Bible:
 - Topic / Idea: "${topic.trim()}"
 - Story Mode: ${selectedMode}
-- Target Duration: ${selectedDuration} (Target Scene Count: ${targetSceneCount} scenes of ~10s each)
+- Target Duration: ${selectedDuration} (Target Scene Count: ${targetSceneCount} scenes of ~${SECONDS_PER_SCENE}s each)
 - Language: ${selectedLanguage}
 - Animation Style: ${selectedStyle}
 - Is Long-Form Cinematic: ${isLongForm ? `YES (${numChapters} Chapters with deep multi-act narrative arc)` : "Standard"}
@@ -1467,6 +1765,25 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
       // inventing new ones.
       storyData.socialGraph = socialGraph;
       storyData.worldRegistry = worldRegistry;
+      storyData.storyScope = selectedScope;
+      storyData.beatDensity = beatDensity;
+      storyData.lifeJourney = lifeJourney;
+
+      // Report only. Nothing about the journey is auto-corrected here - the
+      // structural corrections all happened during normalisation, and what is
+      // left needs judgement rather than code.
+      storyData.lifeJourneyReport = buildLifeJourneyReport(
+        lifeJourney,
+        lifeJourneyIssues,
+        targetSceneCount
+      );
+      if (storyData.lifeJourneyReport.phaseCount > 1) {
+        console.log(
+          `[Journey] ${storyData.lifeJourneyReport.phaseCount} phase(s), ` +
+            `${storyData.lifeJourneyReport.warnings} warning(s) and ` +
+            `${storyData.lifeJourneyReport.infos} note(s).`
+        );
+      }
 
       // Identity and social facts. Report only: nothing is regenerated, and
       // physical state is deliberately left to the Continuity Director.
@@ -1509,6 +1826,55 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         narrativeBlueprint,
         storyData.characters
       );
+
+      // Speakability of the finished timeline. Report only - a scene whose
+      // dialogue cannot be performed in ten seconds is flagged, never cut,
+      // because silently trimming a line would corrupt the Flow prompt that
+      // was built from it.
+      storyData.dialogueFeasibility = buildFeasibilityReport(storyData.scenes, selectedLanguage);
+
+      // Scene contracts: the dramatic claim each scene makes, CHECKED rather
+      // than believed. Report only - nothing is rewritten and no scene is
+      // regenerated on the strength of a finding.
+      storyData.contractReport = buildSceneContractReport({
+        scenes: storyData.scenes,
+        characters: storyData.characters,
+      });
+      console.log(`[Contracts] ${summariseContracts(storyData.contractReport)}.`);
+
+      // Staging load: can each scene be produced as ONE ten-second clip?
+      // Dialogue was only half the feasibility question.
+      storyData.actionDensity = buildActionDensityReport(storyData.scenes);
+
+      // The gate. It CONSUMES every layer above and owns none of them, turning
+      // measurements into explainable findings. Report only: "block" names a
+      // severe failure, it never withholds a story.
+      storyData.qualityGate = buildQualityGateReport({
+        scenes: storyData.scenes,
+        blueprint: narrativeBlueprint,
+        distinctiveness: storyData.storyQuality?.distinctiveness,
+        feasibility: storyData.dialogueFeasibility,
+        actionDensity: storyData.actionDensity,
+        contracts: storyData.contractReport,
+        beatDensity: beatDensity,
+        storyQuality: storyData.storyQuality,
+        lifeJourney: lifeJourney,
+      });
+      console.log(`[Quality gate] ${summariseQualityGate(storyData.qualityGate)}.`);
+
+      const distinct = storyData.storyQuality.distinctiveness;
+      if (distinct) {
+        const flagged = distinct.pairs.filter((p: any) => !p.exempt).length;
+        console.log(
+          `[Distinctiveness] avg consecutive similarity ${distinct.averageConsecutiveSimilarity}, ` +
+            `${flagged} flagged pair(s), ${distinct.runs.length} repetition run(s).`
+        );
+      }
+      console.log(
+        `[Performance] avg ${storyData.dialogueFeasibility.averageWords} words/scene ` +
+          `(envelope ${storyData.dialogueFeasibility.envelope.comfortable}w), ` +
+          `${storyData.dialogueFeasibility.overruns.length} scene(s) overrun the shot.`
+      );
       console.log(
         `[Story Quality] cast=${storyData.storyQuality.castSize} beats=${storyData.storyQuality.beatsCovered}/${storyData.storyQuality.beatCount} ` +
           `speakers=${storyData.storyQuality.dialogueDistribution.length} repeatedLines=${storyData.storyQuality.repeatedDialogueLines.length} ` +
@@ -1533,16 +1899,27 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         buildCharacterReferencePackage(char, storyData.animationStyle || selectedStyle)
       );
 
+      // Name the Ingredients each clip needs. The operator package used to go
+      // Frame Handoff -> Positive Prompt -> Negative Prompt and never say which
+      // character references to attach, so holding identity depended on the
+      // operator remembering the whole cast for every shot.
+      for (const scene of storyData.scenes || []) {
+        scene.referenceAssets = buildReferenceAssets(scene, storyData.characterReferences);
+      }
+
+      // The report names the provider that ACTUALLY served this run, read
+      // from telemetry. It used to hardcode "deepseek", which became a false
+      // claim the moment a second provider was registered.
+      const runTelemetry = endCapture();
       const reportPath = saveStoryReport({
         generationId,
         request: req.body,
-        provider: "deepseek",
-        model: "deepseek-flash",
+        ...attributionFrom(runTelemetry),
         status: storyData.sceneGeneration?.isComplete === false ? "partial" : "complete",
         elapsedMs: Date.now() - generationStartedAt,
         story: storyData,
         blueprint: narrativeBlueprint,
-        telemetry: endCapture(),
+        telemetry: runTelemetry,
       });
       if (reportPath) console.log(`[Report] Test report saved: ${reportPath}`);
 
@@ -1553,15 +1930,15 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
 
       // A failed run is the most useful thing to capture: the report keeps
       // whatever was produced before the failure plus the exact error.
+      const failureTelemetry = endCapture();
       const reportPath = saveStoryReport({
         generationId,
         request: req.body,
-        provider: "deepseek",
-        model: "deepseek-flash",
+        ...attributionFrom(failureTelemetry),
         status: "failed",
         elapsedMs: Date.now() - generationStartedAt,
         blueprint: narrativeBlueprintForReport,
-        telemetry: endCapture(),
+        telemetry: failureTelemetry,
         failure: { message: error?.message || String(error), stack: error?.stack },
       });
       if (reportPath) console.log(`[Report] Failure report saved: ${reportPath}`);
@@ -1702,7 +2079,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
       const prevEnd = prevScene?.endState || prevScene?.characterActions || previousScenePrompt || "Opening shot of the film";
       const nextStart = nextScene?.startState || nextScene?.characterActions || nextScenePrompt || "Concluding resolution of the film";
 
-      const systemInstruction = `You are a world-class children's animation director regenerating a SINGLE 10-second shot (Scene #${sceneNum} covering ${expectedTimeRange}).
+      const systemInstruction = `You are a world-class children's animation director regenerating a SINGLE ${SECONDS_PER_SCENE}-second shot (Scene #${sceneNum} covering ${expectedTimeRange}).
 Animation Style: ${selectedStyle}
 Story Mode: ${selectedMode}
 Language: ${selectedLanguage}
@@ -1715,7 +2092,7 @@ This scene sits between Scene ${sceneNum - 1} and Scene ${sceneNum + 1}. You mus
    "${nextStart}"
 3. NO RESET: Retain character screen positions, held props, lighting, environment, and persistent emotional momentum.
 4. MULTI-CHARACTER DIALOGUE: Format natural conversation with speaker tags in ${selectedLanguage}. Synchronize speech with physical actions and facial expressions. Populate 'dialogueTurns'.
-5. FLOW / VEO PROMPT (SELF-CONTAINED): The prompt is pasted into Flow alone and the model cannot see Scene ${sceneNum - 1}. NEVER reference another shot ("continue from previous shot", "same as before", "inherit", "unchanged"). Instead OPEN by restating the previous end state IN FULL as fresh description - each character's screen position, pose, held props, eyeline and expression - then give one continuous ${SECONDS_PER_SCENE}-second action, motivated camera motion, lighting, and the exact closing frame. Restate every present character's locked visual description word-for-word. Positive description only: no "avoid", "no" or "without" - negative constraints are delivered in a separate field.
+5. FLOW / VEO PROMPT (SELF-CONTAINED): The prompt is pasted into Flow alone and the model cannot see Scene ${sceneNum - 1}. NEVER reference another shot ("continue from previous shot", "same as before", "inherit", "unchanged"). DO NOT write an opening or closing frame - both are attached automatically from 'endState', so that this shot's closing frame and the next shot's opening frame are the same text. Put that care into 'endState' instead, written as a still image in the present tense with no timestamp and no scene number. The prompt body is: animation style and palette, every present character's locked visual description word-for-word, one continuous ${SECONDS_PER_SCENE}-second action with the dialogue quoted inside it, motivated camera motion, lighting, Foley and score. Positive description only: no "avoid", "no" or "without" - negative constraints are delivered in a separate field.
 6. TRANSITION TYPE: Set 'transitionType' to "CHAIN" only if the action flows unbroken from Scene ${sceneNum - 1} (same location, same continuous motion, no time jump); otherwise "CUT".`
         + buildStoryIntelligenceDirectives({
           startScene: sceneNum,
@@ -1771,7 +2148,7 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null, (characters || []).map((c: a
         scene.startState = prevEnd;
       }
       if (!scene.endState) {
-        scene.endState = `At 10.0s: ${scene.characterActions}. Finishing posture prepares for Scene ${sceneNum + 1}.`;
+        scene.endState = `${scene.characterActions}. Characters hold the finishing posture.`;
       }
       if (!scene.nextSceneHandoff) {
         scene.nextSceneHandoff = `Scene ${sceneNum + 1} must inherit character positions and held props.`;
@@ -1780,19 +2157,39 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null, (characters || []).map((c: a
       // Same self-containment pass the batch pipeline applies, so a
       // regenerated scene is copy-pasteable on exactly the same terms.
       if (scene.finalVideoPrompt) {
-        scene.finalVideoPrompt = makeSelfContained(
+        scene.finalVideoPrompt = makeSelfContained(scene.finalVideoPrompt);
+        scene.finalVideoPrompt = stripSpeakerLabelsInQuotes(
           scene.finalVideoPrompt,
-          prevEnd ? { endState: prevEnd } : undefined
+          (req.body?.characters || []).map((ch) => ch?.name).filter(Boolean)
         );
+        scene.finalVideoPrompt = ensureDialogueInPrompt(
+          scene.finalVideoPrompt,
+          scene.dialogueTurns,
+          selectedLanguage
+        );
+        scene.finalVideoPrompt = applyFrameBookends(scene.finalVideoPrompt, {
+          ...buildSceneFrames(scene, prevEnd ? { endState: prevEnd } : null),
+          clock: renderBeatClock((scene.beatClock = buildBeatClock(scene, selectedLanguage))),
+          // A regenerated scene inherits the sign the surrounding scenes show,
+          // so a re-render cannot quietly reword a banner the film established.
+          worldText: worldTextOf(scene) || worldTextOf(prevScene),
+          bystanders: renderBystanders(scene),
+          // A re-rendered scene must carry the same style sentence as the
+          // scenes around it, or the repair introduces its own seam.
+          style: buildStyleLock(selectedStyle),
+        });
       }
       scene.negativePrompt = VIDEO_NEGATIVE_PROMPT;
       scene.continuityState = normalizeContinuityState(scene.continuityState);
 
       const transitionType = normalizeTransitionType(scene.transitionType, sceneNum <= 1);
       scene.transitionType = transitionType;
+      // The caller sends the previous scene, so this join is classified on the
+      // same terms as the batch path rather than on its scene number alone.
       scene.frameHandoff = buildFrameHandoff(
         transitionType,
-        sceneNum > 1 ? sceneNum - 1 : undefined
+        scene,
+        sceneNum > 1 ? prevScene || { sceneNumber: sceneNum - 1, endState: prevEnd } : null
       );
 
       scene.transitionContract = {
@@ -1803,6 +2200,34 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null, (characters || []).map((c: a
         nextSceneHandoff: scene.nextSceneHandoff,
         transitionType,
       };
+
+      // PARITY WITH THE BATCH PATH. A regenerated scene used to be returned
+      // with no quality analysis at all - not the gate, feasibility, contracts,
+      // action density or continuity - so it could overrun its shot, break
+      // screen direction or contradict its own contract and nothing would say
+      // so. Everything that can be measured on ONE scene now runs here.
+      try {
+        const window = prevScene ? [prevScene, scene] : [scene];
+        validateContinuity(window);
+
+        const gate = buildQualityGateReport({
+          scenes: window,
+          feasibility: buildFeasibilityReport([scene], selectedLanguage),
+          actionDensity: buildActionDensityReport([scene]),
+          contracts: buildSceneContractReport({ scenes: [scene] }),
+        });
+
+        // Only this scene's findings: the previous scene is context, not the
+        // subject, and reporting its faults here would be confusing.
+        scene.qualityFindings = gate.findings.filter((f) =>
+          f.sceneNumbers.length === 0 ? false : f.sceneNumbers.includes(sceneNum)
+        );
+      } catch (analysisError: any) {
+        // Analysis is reporting, never a reason to fail a regeneration the
+        // caller is waiting on.
+        console.warn(`[Regenerate Scene] Analysis skipped: ${analysisError?.message}`);
+        scene.qualityFindings = [];
+      }
 
       return res.json({ success: true, scene, data: { scene } });
     } catch (error: any) {

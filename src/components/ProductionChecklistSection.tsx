@@ -1,3 +1,4 @@
+import { SHOT_LENGTH_LABEL } from '../shared/duration';
 import React from 'react';
 import { VeggieStory } from '../types';
 import { computeProductionChecklist, validateTimeline } from '../utils/validation';
@@ -187,7 +188,7 @@ export const ProductionChecklistSection: React.FC<ProductionChecklistSectionProp
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
               <span className="text-slate-700 font-semibold block text-[11px]">Expected Scene Count</span>
               <span className="font-mono font-bold text-slate-900 text-sm">
-                {report.expectedSceneCount} scenes (~10s each)
+                {report.expectedSceneCount} scenes (~{SHOT_LENGTH_LABEL} each)
               </span>
             </div>
 

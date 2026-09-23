@@ -1,0 +1,37 @@
+<!--
+  ANAMSTUDIO corner mark.
+
+  Drawn as outlined paths rather than <text>, so it renders identically
+  everywhere without depending on a font being installed - the same reason the
+  video pipeline restates locked character descriptions instead of trusting the
+  model to remember them.
+
+  Semi-transparent white at 45%: legible over the warm ochre and deep green
+  palettes these films use, and over both a bright noon sky and a night field,
+  without ever competing with the picture.
+
+  Sized 512x512 with generous padding so it can be scaled to any clip height
+  and still sit inside the safe area.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <g fill="#ffffff" fill-opacity="0.45">
+    <!-- A -->
+    <path d="M96 352 L168 128 L216 128 L288 352 L240 352 L225 304 L159 304 L144 352 Z
+             M172 262 L212 262 L192 198 Z" />
+    <!-- S -->
+    <path d="M416 186
+             C416 150 386 126 344 126
+             C300 126 272 152 272 188
+             C272 222 294 238 336 250
+             C368 259 378 266 378 282
+             C378 298 364 308 342 308
+             C318 308 302 295 300 272
+             L256 272
+             C258 322 292 348 344 348
+             C392 348 422 322 422 284
+             C422 248 400 232 356 220
+             C324 211 314 204 314 188
+             C314 172 326 162 344 162
+             C364 162 374 173 376 186 Z" />
+  </g>
+</svg>

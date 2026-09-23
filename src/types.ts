@@ -108,12 +108,47 @@ export type ShotTransitionType = 'CUT' | 'CHAIN';
  * this scene's prompt. Emitted per scene so the whole timeline can be worked
  * through without deciding, shot by shot, which joins need frame chaining.
  */
+/**
+ * What the operator does with the previous clip's last frame.
+ *
+ * CHAIN    - it becomes this clip's FIRST frame (one unbroken take).
+ * IDENTITY - it goes in as a style-and-identity reference on a cut that stays in
+ *            the same place with the same people. This is the case the old
+ *            binary CHAIN/CUT policy missed, and where character faces, in-frame
+ *            text and background crowds were measurably drifting.
+ * FRESH    - no upload; the scene has moved to a new place or a new day.
+ */
+export type FrameHandoffMode = 'CHAIN' | 'IDENTITY' | 'FRESH';
+
 export interface FrameHandoff {
   type: ShotTransitionType;
   /** Human-readable workflow step shown in the UI and the export. */
   instruction: string;
   /** For CHAIN: the scene whose final frame becomes this scene's first frame. */
   sourceSceneNumber?: number;
+  /** Which of the three handoffs this join needs. */
+  mode?: FrameHandoffMode;
+  /** True when the operator must export and upload a frame before generating. */
+  requiresFrameUpload?: boolean;
+}
+
+/** A character reference package this scene needs attached as a Flow Ingredient. */
+export interface SceneReferenceAsset {
+  characterId: string;
+  characterName: string;
+}
+
+/**
+ * A character who is present in the scene but does not speak in it.
+ *
+ * Planned explicitly because the alternative was measured: four scenes in a real
+ * generation put characters on screen, gave them no line and nothing to do, and
+ * the prompt had nothing to say about them. Flow renders that as people standing
+ * still while somebody else talks.
+ */
+export interface SceneBystander {
+  character: string;
+  doing: string;
 }
 
 export interface SceneTransitionContract {
@@ -210,6 +245,13 @@ export interface ContinuityState {
   propDispositions?: PropDisposition[];
   openClosedObjects?: string[];
   environmentState: string;
+  /**
+   * The background population - a watching crowd, passers-by, animals.
+   *
+   * Restated across scenes for the same reason locked character descriptions
+   * are: an unnamed crowd is re-invented by the video model in the next shot.
+   */
+  backgroundCast?: string;
   storyGoals?: string;
   unresolvedConflicts?: string;
   /** Per-character snapshot, preserved alongside the flattened maps above. */
@@ -281,6 +323,22 @@ export interface ScenePlannerItem {
    */
   openingState?: ContinuityState;
   continuityIssues?: ContinuityIssue[];
+  /**
+   * Where this scene sits in STORY time, as opposed to the screen time in
+   * timeRange. Defaults to phase 1 / day 0 when no journey was planned.
+   */
+  /**
+   * The scene's dramatic contract: what it is trying to do and what changes.
+   * Optional - absent on every story generated before this layer existed.
+   */
+  contract?: SceneContract;
+  storyTime?: StoryTimeMarker;
+  /**
+   * Set by the engine from the blueprint, never authored per scene: a model
+   * free to declare its own jumps produces exactly the random time jumps this
+   * architecture exists to prevent.
+   */
+  timeJumpBefore?: TimeJump;
 }
 
 export interface CharacterReferencePackage {
@@ -385,6 +443,22 @@ export interface StoryBeat {
   emotionalTemperature: string;
   charactersInFocus: string[];
   relationshipShift?: string;
+  /**
+   * How many MATERIALLY DIFFERENT scenes this beat's material contains.
+   *
+   * A claim, never trusted on its own - it is checked against
+   * , because a model asked for a number will supply the
+   * number it was allocated.
+   */
+  distinctScenesNeeded?: number;
+  /**
+   * One line per allocated scene, saying what that scene DOES.
+   *
+   * This is the verifiable half: paraphrases of one move are detectable,
+   * a bare count is not. Optional, so older blueprints still normalise -
+   * they simply report as unverifiable rather than as clean.
+   */
+  whatEachSceneDoes?: string[];
 }
 
 export interface StorySetup {
@@ -406,6 +480,13 @@ export interface NarrativeBlueprint {
   beats: StoryBeat[];
   setups: StorySetup[];
   chapters: StoryChapter[];
+  /**
+   * OPTIONAL time-spanning plan. Absent on the normal path, which keeps the
+   * story a single continuous situation exactly as before.
+   */
+  lifeJourney?: LifeJourney;
+  /** Beat-density measurement. Report only; never rewrites the beat sheet. */
+  beatDensity?: any;
 }
 
 export interface StoryQualityReport {
@@ -665,6 +746,24 @@ export interface VeggieStory {
     unfulfilled: number;
     unplanned: number;
   };
+  /** Time shape requested for this story, so regeneration reuses it. */
+  storyScope?: StoryScope;
+  /** The planned journey, persisted so regeneration inherits it. */
+  lifeJourney?: LifeJourney;
+  /** Per-phase appearance. Empty or absent for single-phase stories. */
+  appearanceVariants?: CharacterAppearanceVariant[];
+  /** Report only - nothing about the journey is auto-corrected. */
+  lifeJourneyReport?: LifeJourneyReport;
+  /** Speakability of each scene. Report only; nothing is ever truncated. */
+  dialogueFeasibility?: any;
+  /** Beat-density measurement from blueprint time. Report only. */
+  beatDensity?: any;
+  /** Scene-contract validation. Report only; nothing is rewritten. */
+  contractReport?: SceneContractReport;
+  /** Staging load per scene. Report only. */
+  actionDensity?: any;
+  /** The P4 quality gate. Report only - never blocks or repairs. */
+  qualityGate?: StoryQualityGateReport;
 }
 
 /** Continuity outcome for a generated story. Report only - nothing auto-fixed. */
@@ -685,4 +784,572 @@ export interface TopicSuggestion {
   suggestedMode?: StoryMode;
   category?: 'Friendship' | 'Adventure' | 'Moral Story' | 'Comedy & Fun' | 'Mystery & Magic';
   characters?: string[];
+}
+
+// ===========================================================================
+// LIFE JOURNEY
+//
+// A fourth state layer, for stories that span time rather than a situation.
+//
+// The existing three layers cannot hold this data. Making an occupation a FACT
+// freezes it for the film and makes any change a validation error; making it
+// per-scene STATE lets it drift and re-asserts it sixty times. So:
+//
+//   LIFE STATE is what is true of a character or household for the span of one
+//   LIFE PHASE. It is immutable WITHIN a phase, and changes ONLY at a declared
+//   time jump, by a change planned at blueprint time.
+//
+// That definition is the whole design. Inside a phase life state behaves
+// exactly like a fact, so every existing validator keeps working untouched;
+// all the new logic lives at phase boundaries, which are explicit and few.
+//
+// Everything here is OPTIONAL. A story with no LifeJourney has one implicit
+// phase covering every scene, and every system behaves exactly as it did
+// before this layer existed.
+// ===========================================================================
+
+/**
+ * How a story is shaped in TIME.
+ *
+ * Deliberately orthogonal to StoryMode: a Life Journey mystery and a Single
+ * Episode heartwarming story are both reachable. This is not a twelfth mode
+ * and does not compete with the existing eleven.
+ */
+export type StoryScope = 'Auto' | 'Single Episode' | 'Life Journey';
+
+export const STORY_SCOPE_OPTIONS: StoryScope[] = ['Auto', 'Single Episode', 'Life Journey'];
+
+/**
+ * Coarse size of a time jump.
+ *
+ * Code reads this to decide what state may legitimately change across the
+ * boundary; the story-facing wording lives in `span`.
+ */
+export type TimeJumpMagnitude =
+  | 'within-day'
+  | 'overnight'
+  | 'days'
+  | 'weeks'
+  | 'months'
+  | 'seasons'
+  | 'years';
+
+/** A declared jump in story time between two consecutive scenes. */
+export interface TimeJump {
+  /** The jump happens between this scene and the next one. */
+  afterScene: number;
+  /**
+   * Named for this story, never an enum: "that evening", "the next monsoon",
+   * "four winters later".
+   */
+  span: string;
+  magnitude: TimeJumpMagnitude;
+  /**
+   * How the jump is SHOWN on screen. Required, because a jump the audience
+   * cannot see is a continuity break wearing a label.
+   */
+  screenTreatment: string;
+  /** One line per thing the audience must understand has changed. */
+  whatChanged: string[];
+}
+
+/** What is true of one character for the span of one life phase. */
+export interface CharacterLifeState {
+  characterId: string;
+  /**
+   * Overrides CharacterSocial.lifeStage from phase 2 onward. Phase 1's life
+   * state IS CharacterSocial, so there is no second source of truth.
+   */
+  lifeStage: string;
+  /** Only where the story establishes them. Omitted rather than invented. */
+  occupation?: string;
+  education?: string;
+  skills?: string[];
+  responsibilities?: string[];
+  /**
+   * Feeds the appearance variant. Describes SCALE and BEARING only - height,
+   * build, posture, wear. Never identity.
+   */
+  physicalMaturity?: string;
+}
+
+/** What is true of a household for the span of one life phase. */
+export interface HouseholdLifeState {
+  householdId: string;
+  /** How this household earns. Invented per story; never defaulted. */
+  livelihood?: string;
+  /** Qualitative and story-relevant only. Never a number, never a currency. */
+  circumstances?: string;
+  dwellingPlaceId?: string;
+  /** Things the household owns that matter. These survive time jumps. */
+  possessions?: string[];
+  /** What presses on them this phase. The engine of ordinary drama. */
+  pressures?: string[];
+}
+
+/**
+ * One span of the story across which life state is constant.
+ *
+ * A phase is a contiguous run of CHAPTERS. Its scene range is DERIVED from
+ * those chapters and never authored independently, so scene ranges keep a
+ * single source of truth in the beat sheet.
+ */
+export interface LifePhase {
+  phaseNumber: number;
+  /** Named for THIS story, never a generic label. */
+  title: string;
+  chapterNumbers: number[];
+  sceneStart: number;
+  sceneEnd: number;
+  /** The jump that OPENS this phase. Absent on phase 1. */
+  entryJump?: TimeJump;
+  characterStates: CharacterLifeState[];
+  householdStates: HouseholdLifeState[];
+  /** Place ids genuinely in use this phase. A place may enter and leave. */
+  activePlaceIds: string[];
+  /** Conditions of the wider world this phase, if the story uses any. */
+  worldConditions?: string[];
+}
+
+/** How an aspiration ends. Not every one is achieved, and that is often better. */
+export type AspirationOutcome = 'achieved' | 'redirected' | 'relinquished' | 'denied';
+
+/**
+ * A long-horizon goal.
+ *
+ * Deliberately NOT a `want`. A want is filmable and immediate by design, and
+ * the craft doctrine applies a hard filmable test to it. A life goal fails
+ * that test on purpose - so it lives here, and each phase's `want` is how it
+ * gets dramatised in that phase.
+ */
+export interface Aspiration {
+  characterId: string;
+  goal: string;
+  whyItMatters: string;
+  /** What pursuing it costs the people around them. */
+  costToOthers: string;
+  obstacles: string[];
+  resolvesAtPhase: number;
+  outcome: AspirationOutcome;
+}
+
+/**
+ * A concrete, visible step on the way. The anti-instant-success structure.
+ *
+ * `provingSceneNumbers` is the mechanism: a milestone must point at scenes
+ * that ALREADY showed the work. Forward references are dropped during
+ * normalisation, because a milestone cannot be earned by the future.
+ */
+export interface Milestone {
+  phaseNumber: number;
+  atScene: number;
+  /** Dynamic: "first sale", "taught to read", "the loan repaid". */
+  kind: string;
+  description: string;
+  provingSceneNumbers: number[];
+  /** What it costs. A milestone that costs nothing plays flat. */
+  cost: string;
+}
+
+/**
+ * A repeated activity of ordinary life, recorded so it can be VARIED.
+ *
+ * `variationAcrossStory` is required: a routine that cannot say how it differs
+ * each time it appears is filler by definition.
+ */
+export interface Routine {
+  id: string;
+  activity: string;
+  characterIds: string[];
+  placeId: string;
+  householdId?: string;
+  phaseNumbers: number[];
+  variationAcrossStory: string;
+}
+
+/** The whole layer. Absent means an ordinary single-episode story. */
+export interface LifeJourney {
+  /** Why THIS topic wants a journey. Guards against reflexive use. */
+  whyThisShape: string;
+  phases: LifePhase[];
+  timeJumps: TimeJump[];
+  aspirations: Aspiration[];
+  milestones: Milestone[];
+  routines: Routine[];
+  /** The film's argument in structural terms: the two ends of the story. */
+  openingLife: string;
+  closingLife: string;
+}
+
+/**
+ * Per-phase appearance.
+ *
+ * `identityAnchors` is assembled by CODE from the Character Bible, never by
+ * the model - which is what makes identity drift across phases structurally
+ * impossible rather than merely discouraged. The model supplies only
+ * `ageAppearance` and `wardrobe`.
+ */
+export interface CharacterAppearanceVariant {
+  characterId: string;
+  phaseNumber: number;
+  /** May change: scale, build, posture, bearing, grooming, wear. */
+  ageAppearance: string;
+  /** May change: clothing, shoes, accessories. */
+  wardrobe: string;
+  /** Copied verbatim from the bible: type, face, eyes, features, palette. */
+  identityAnchors: string;
+  /** Assembled from the three above, for this phase's Flow prompts. */
+  lockedVisualDescriptionForPhase: string;
+}
+
+/**
+ * Where a scene sits in STORY time, as opposed to screen time.
+ *
+ * `dayIndex` is the whole fix for time-of-day checks: it is monotonic within a
+ * phase, so "night then next morning" is a new day rather than time running
+ * backwards. Absent markers default to phase 1 / day 0, which reproduces the
+ * behaviour that existed before this layer.
+ */
+export interface StoryTimeMarker {
+  phaseNumber: number;
+  dayIndex: number;
+  /** Optional story-facing label: "the morning after the results". */
+  label?: string;
+}
+
+/** A life-journey problem found during normalisation or validation. */
+export interface LifeJourneyIssue {
+  kind:
+    | 'phase'
+    | 'time-jump'
+    | 'life-state'
+    | 'aspiration'
+    | 'milestone'
+    | 'routine'
+    | 'scope';
+  phaseNumber?: number;
+  sceneNumber?: number;
+  title: string;
+  detail: string;
+  suggestedFix: string;
+  severity: 'warning' | 'info';
+}
+
+/** Report-only account of the planned journey. Nothing is auto-corrected. */
+export interface LifeJourneyReport {
+  /** 1 when no journey was planned. */
+  phaseCount: number;
+  scenesPerPhase: Array<{ phaseNumber: number; title: string; scenes: number }>;
+  timeJumpCount: number;
+  milestoneCount: number;
+  unearnedMilestones: number[];
+  aspirationsResolved: number;
+  aspirationsUnresolved: number;
+  routineCount: number;
+  issues: LifeJourneyIssue[];
+  warnings: number;
+  infos: number;
+}
+
+// ===========================================================================
+// SCENE PROGRESSION CONTRACT
+//
+// What a scene is TRYING to do, and what materially changes because it exists.
+//
+// The gap this closes: `storyFunction` is prose, validated by a length check,
+// so twelve scenes claiming "Golu keeps going, determined" all pass. Prose
+// cannot be compared by code, which is why every anti-filler rule aimed at it
+// was unenforceable. These fields are typed and comparable.
+//
+// `storyFunction` is KEPT and unchanged - it becomes the human-readable gloss
+// alongside the machine-readable contract, not a thing replaced by it.
+//
+// OWNERSHIP BOUNDARY. The contract records a scene's DRAMATIC CLAIM and
+// nothing else. It must never duplicate:
+//   - ContinuityState        (physical positions, props, lighting, camera)
+//   - socialChanges          (relationship deltas - STATE, owned by the graph)
+//   - StoryMemory            (derived, never stored)
+//   - Life State             (per-phase truth, owned by the journey layer)
+//   - the Character Bible    (identity)
+//   - StorySetup             (the setup/payoff source of truth)
+// A progression may say trust moved from guarded to slightly restored; the
+// relationship FACT and the delta that records it stay where they already live.
+//
+// Every field is OPTIONAL. A story generated before this layer existed renders
+// and reports exactly as it did, and contract-dependent checks report
+// themselves as unverifiable rather than as clean.
+// ===========================================================================
+
+/**
+ * What kind of change a scene produces.
+ *
+ * The typed replacement for a prose claim. Deliberately wide: a quiet scene
+ * that shifts an emotion or lands a small piece of information is doing its
+ * job, and nothing here requires danger, dialogue or a reversal.
+ */
+export type NarrativeChangeKind =
+  | 'information'   // something is learned
+  | 'decision'      // a choice is made
+  | 'consequence'   // an earlier choice lands
+  | 'relationship'  // how two characters stand shifts
+  | 'emotional'     // an emotional state genuinely turns
+  | 'obstacle'      // something new blocks the goal
+  | 'discovery'     // something is found or revealed
+  | 'escalation'    // cost or pressure rises
+  | 'setup'         // something is planted
+  | 'payoff'        // something planted returns changed
+  | 'reversal'      // the understanding of the problem inverts
+  | 'progress'      // measurable movement toward the goal
+  | 'setback';      // measurable movement away
+
+export const NARRATIVE_CHANGE_KINDS: NarrativeChangeKind[] = [
+  'information', 'decision', 'consequence', 'relationship', 'emotional',
+  'obstacle', 'discovery', 'escalation', 'setup', 'payoff', 'reversal',
+  'progress', 'setback',
+];
+
+/** What happened to the scene's own goal. */
+export type SceneOutcome = 'achieved' | 'partial' | 'denied' | 'deferred' | 'reversed';
+
+export const SCENE_OUTCOMES: SceneOutcome[] = [
+  'achieved', 'partial', 'denied', 'deferred', 'reversed',
+];
+
+/**
+ * What kind of ten seconds this is.
+ *
+ * P2 SCOPE: CLASSIFICATION ONLY. It records what the scene is; it does not
+ * yet drive any generation-density rule. The Performance Budget Director that
+ * consumes it arrives in P3.
+ */
+export type PerformanceType =
+  | 'dialogue-scene'
+  | 'action'
+  | 'establishing'
+  | 'reaction'
+  | 'silent-emotional'
+  | 'montage-element'
+  | 'comedy-beat'
+  | 'transition';
+
+export const PERFORMANCE_TYPES: PerformanceType[] = [
+  'dialogue-scene', 'action', 'establishing', 'reaction',
+  'silent-emotional', 'montage-element', 'comedy-beat', 'transition',
+];
+
+export type RepetitionIntentKind =
+  | 'callback'
+  | 'montage-element'
+  | 'parallel-scene'
+  | 'running-gag'
+  | 'ritual';
+
+export const REPETITION_INTENT_KINDS: RepetitionIntentKind[] = [
+  'callback', 'montage-element', 'parallel-scene', 'running-gag', 'ritual',
+];
+
+/**
+ * A deliberate echo of an earlier scene.
+ *
+ * Declaring one is NOT a way to switch off repetition findings. The
+ * declaration has to be valid - it must point BACKWARD at a scene that exists,
+ * and it must say what materially differs this time - and even a valid
+ * declaration is withdrawn when the two scenes turn out to be near-identical.
+ * Repetition in children's storytelling works through variation; an unchanged
+ * repeat is not a callback, it is the same scene twice.
+ */
+export interface RepetitionIntent {
+  kind: RepetitionIntentKind;
+  /** Must be an EARLIER scene number that exists in this story. */
+  echoesScene: number;
+  /** REQUIRED. What materially differs this time. */
+  variation: string;
+}
+
+/**
+ * The value this scene turns.
+ *
+ * `before` and `after` must describe the SAME VALUE at two different states -
+ * "trust: guarded -> slightly restored". They must not describe two
+ * activities: "Golu enters the room -> Golu talks to Mooli" is what the scene
+ * SHOWS, not what it CHANGES, and that distinction is the whole point of the
+ * field.
+ */
+export interface SceneProgression {
+  kind: NarrativeChangeKind;
+  /** The value at stake, named for this story: "trust", "the deadline", "hope". */
+  value: string;
+  /** Where that value stands entering the scene. */
+  before: string;
+  /** Where it stands leaving it. Must be a different state of the same value. */
+  after: string;
+}
+
+/** One scene's dramatic contract. Every field optional at the story level. */
+export interface SceneContract {
+  /**
+   * What the focal character or group is trying to accomplish IN THIS SCENE.
+   * Not the whole-story goal.
+   */
+  goal: string;
+  /**
+   * What prevents easy completion here. May be internal, interpersonal,
+   * situational or physical - a quiet scene does not need invented danger.
+   */
+  obstacle: string;
+  outcome: SceneOutcome;
+  progression: SceneProgression;
+  performanceType: PerformanceType;
+  repetitionIntent?: RepetitionIntent;
+}
+
+/** One problem found in one scene's contract. Report only. */
+export interface ContractIssue {
+  sceneNumber: number;
+  code:
+    | 'missing-contract'
+    | 'missing-goal'
+    | 'missing-obstacle'
+    | 'invalid-outcome'
+    | 'invalid-kind'
+    | 'invalid-performance-type'
+    | 'missing-progression'
+    | 'identical-before-after'
+    | 'near-identical-before-after'
+    | 'generic-progression'
+    | 'activity-as-progression'
+    | 'progression-restates-action'
+    | 'duplicate-contract'
+    | 'repetition-intent-forward-reference'
+    | 'repetition-intent-unknown-scene'
+    | 'repetition-intent-no-variation'
+    | 'repetition-intent-invalid-kind';
+  severity: 'warning' | 'info';
+  title: string;
+  detail: string;
+  suggestedFix: string;
+}
+
+/** Deterministic account of the contracts across a finished story. */
+export interface SceneContractReport {
+  sceneCount: number;
+  scenesWithValidContract: number[];
+  scenesMissingContract: number[];
+  scenesWithInvalidContract: number[];
+  progressionKinds: Array<{ kind: string; scenes: number; sharePercent: number }>;
+  performanceTypes: Array<{ type: string; scenes: number; sharePercent: number }>;
+  /** Scenes whose before/after do not describe a real value change. */
+  unchangedProgressions: number[];
+  /** Scenes whose repetitionIntent is unusable. */
+  invalidRepetitionIntents: number[];
+  issues: ContractIssue[];
+  /** True when NO scene carried a contract - old stories land here. */
+  degraded: boolean;
+  warnings: number;
+  infos: number;
+}
+
+// ===========================================================================
+// STORY QUALITY GATE (P4)
+//
+// Turns the measurements produced by P0-P3 into explainable findings.
+//
+// REPORT ONLY, permanently. `block` means "a severe quality failure was
+// detected", never "this story was withheld" - a generation the user paid
+// tokens for is always delivered. Nothing here rewrites a scene, mutates story
+// state, or repairs anything; repair is P5 and is not built.
+//
+// The gate OWNS no story data. It reads the analysis layers and emits
+// findings. FACTS stay with the social graph and world registry, STATE with
+// StoryMemory and the deltas, PHYSICS with ContinuityState, LIFE STATE with
+// the journey layer. Quality analysis must not become a fifth state system.
+// ===========================================================================
+
+export type QualitySeverity = 'block' | 'repair' | 'warn' | 'info';
+
+/**
+ * Stable finding codes.
+ *
+ * Stable because a report a person reads across generations needs the same
+ * name for the same problem, and because P5 will eventually key its repair
+ * decisions off them.
+ */
+export type QualityFindingCode =
+  // --- repetition (consumes P0) ---
+  | 'repetition-run'
+  | 'near-duplicate-scenes'
+  | 'unvaried-declared-recurrence'
+  // --- contract honesty (consumes P2 + P3) ---
+  | 'consecutive-same-dramatic-job'
+  | 'planned-move-not-executed'
+  | 'outcome-contradicts-progression'
+  | 'relationship-change-uncorroborated'
+  | 'contract-unusable'
+  // --- ten-second feasibility (consumes P0 + P4) ---
+  | 'dialogue-overruns-shot'
+  | 'dialogue-tight-for-shot'
+  | 'dialogue-underfilled'
+  | 'uniform-dialogue-density'
+  | 'action-overloaded'
+  // --- production feasibility (consumes the Continuity Director) ---
+  | 'chain-screen-direction-reversed'
+  | 'chain-join-unrenderable'
+  // --- necessity ---
+  | 'scene-necessity-doubtful'
+  // --- performance (consumes the performance track) ---
+  | 'speaker-monologue'
+  | 'bystander-idle'
+  // --- production continuity (consumes the frame handoff + world text) ---
+  | 'frame-handoff-missing'
+  | 'world-text-unstable'
+  // --- shot timing (consumes the beat clock) ---
+  | 'beat-clock-overflows'
+  // --- story level (consumes P1 + existing quality report) ---
+  | 'beat-stretched'
+  | 'premise-too-small'
+  | 'unresolved-setup'
+  | 'progression-monotony'
+  | 'place-concentration-pathological';
+
+export interface QualityFinding {
+  code: QualityFindingCode;
+  severity: QualitySeverity;
+  /** Scenes this finding is about. Empty for story-level findings. */
+  sceneNumbers: number[];
+  title: string;
+  /** The measurement that produced it, stated so a person can check it. */
+  detail: string;
+  suggestedFix: string;
+}
+
+export interface StoryQualityGateReport {
+  findings: QualityFinding[];
+  blocked: number;
+  /** Scenes a future repair pass would target. P5 is not built. */
+  repairCandidates: number[];
+  warnings: number;
+  infos: number;
+  /**
+   * True when the evidence needed for the contract-dependent checks was
+   * absent, so those checks were SKIPPED rather than passed.
+   */
+  degraded: boolean;
+  /** Which analysis layers actually had data. */
+  evidence: {
+    distinctiveness: boolean;
+    feasibility: boolean;
+    actionDensity: boolean;
+    contracts: boolean;
+    plannedMoves: boolean;
+    beatDensity: boolean;
+    continuity: boolean;
+  };
+  /**
+   * Continuity warnings NOT treated as quality failures.
+   *
+   * The continuity validator has known false-positive classes (prose-level
+   * location comparison, overnight time). Folding those into quality findings
+   * would bury the real ones, so they are counted separately and left alone.
+   */
+  continuityNoise: number;
 }

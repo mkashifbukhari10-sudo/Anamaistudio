@@ -1,3 +1,4 @@
+import { SHOT_LENGTH_LABEL } from '../shared/duration';
 import React, { useState } from 'react';
 import { VeggieStory, ScenePlannerItem, CharacterReferencePackage } from '../types';
 import {
@@ -388,7 +389,7 @@ ${scene.finalVideoPrompt}`;
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-3.5 text-xs">
                 <div className="space-y-1">
                   <span className="text-slate-700 font-bold uppercase tracking-wider text-[10px]">
-                    Primary Action (10s Focus):
+                    Primary Action ({SHOT_LENGTH_LABEL} Focus):
                   </span>
                   <p className="text-slate-800 leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-200 break-words font-medium">
                     {scene.characterActions}

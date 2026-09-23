@@ -2,6 +2,16 @@ import fs from "fs";
 import path from "path";
 import type { AICallRecord } from "../ai/telemetry.js";
 import { summariseCalls } from "../ai/telemetry.js";
+import { buildLifeJourneySection } from "./life-journey-section.js";
+import { wordEnvelope } from "../story/performance-budget.js";
+import {
+  buildBeatDensitySection,
+  buildContractSection,
+  buildDistinctivenessSection,
+  buildFeasibilitySection,
+  buildQualityGateSection,
+  buildSceneExecutionSection,
+} from "./quality-section.js";
 
 /**
  * Manual-test story reports.
@@ -117,7 +127,13 @@ function sceneBlock(scene: any): string {
     parts.push(`**Social changes:**\n${changes.map((c: any) => `- ${c.characterA} / ${c.characterB} — ${c.dimension}: ${c.change}`).join("\n")}`);
   }
 
-  if (scene?.frameHandoff) parts.push(`**Frame handoff:** ${scene.frameHandoff.type} — ${scene.frameHandoff.instruction}`);
+  if (scene?.frameHandoff) {
+    const mode = scene.frameHandoff.mode || scene.frameHandoff.type;
+    parts.push(`**Frame handoff:** ${mode} — ${scene.frameHandoff.instruction}`);
+  }
+  if (scene?.referenceAssets?.length) {
+    parts.push(`**Attach references:** ${scene.referenceAssets.map((a: any) => a.characterName).join(", ")}`);
+  }
   if (scene?.finalVideoPrompt) parts.push(`**Flow/Veo prompt:**\n${fence(scene.finalVideoPrompt, "text")}`);
   if (scene?.negativePrompt) parts.push(`**Negative prompt:**\n${fence(scene.negativePrompt, "text")}`);
 
@@ -171,6 +187,80 @@ export function buildStoryReport(input: StoryReportInput): string {
   if (input.failure) {
     out.push(section("FAILURE", `**${input.failure.message}**\n\n${input.failure.stack ? fence(input.failure.stack, "text") : ""}`));
   }
+
+  // Dialogue density gets its own section rather than living inside the quality
+  // JSON. It is the thing most likely to be wrong in a flat-reading story, and
+  // a per-scene bar is faster to judge than counting turns by eye.
+  if (scenes.length > 0) {
+    const counts = scenes.map((s) => ({
+      n: s?.sceneNumber,
+      turns: Array.isArray(s?.dialogueTurns) ? s.dialogueTurns.length : 0,
+      speakers: new Set(
+        (Array.isArray(s?.dialogueTurns) ? s.dialogueTurns : [])
+          .map((t: any) => String(t?.speaker || "").trim())
+          .filter(Boolean)
+      ).size,
+    }));
+    const total = counts.reduce((sum, c) => sum + c.turns, 0);
+    const avg = (total / counts.length).toFixed(1);
+    const envelope = wordEnvelope(String((input.request as any)?.language ?? "Roman Urdu"));
+
+    out.push(
+      section(
+        "Dialogue density",
+        [
+          `**Total turns:** ${total} across ${counts.length} scenes - **average ${avg} per scene**`,
+          `_Density follows what each scene IS. There is no turn quota: a talking scene fits roughly ${envelope.comfortable} spoken words, and establishing, action, reaction, montage and silent scenes are correctly sparse. See Dialogue feasibility for what each scene can actually perform._`,
+          "",
+          "| Scene | Turns | Speakers | |",
+          "|---|---|---|---|",
+          ...counts.map(
+            (c) =>
+              `| S${c.n} | ${c.turns} | ${c.speakers} | ${"#".repeat(Math.min(c.turns, 12))}${c.turns === 0 ? "_(silent)_" : ""} |`
+          ),
+        ].join("\n")
+      )
+    );
+  }
+
+  out.push(section("Beat density", buildBeatDensitySection(story?.beatDensity ?? blueprint?.beatDensity)));
+
+  out.push(
+    section("Story Quality Gate", buildQualityGateSection(story?.qualityGate, story?.actionDensity))
+  );
+
+  out.push(
+    section(
+      "Scene execution",
+      buildSceneExecutionSection({
+        scenes,
+        blueprint,
+        feasibility: story?.dialogueFeasibility,
+        distinctiveness: story?.storyQuality?.distinctiveness,
+        contractReport: story?.contractReport,
+        beatDensity: story?.beatDensity ?? blueprint?.beatDensity,
+      })
+    )
+  );
+
+  out.push(section("Scene contracts", buildContractSection(story?.contractReport)));
+
+  out.push(
+    section("Scene distinctiveness", buildDistinctivenessSection(story?.storyQuality?.distinctiveness))
+  );
+
+  out.push(section("Dialogue feasibility", buildFeasibilitySection(story?.dialogueFeasibility)));
+
+  out.push(
+    section(
+      "Life journey",
+      buildLifeJourneySection({
+        journey: story?.lifeJourney,
+        report: story?.lifeJourneyReport,
+        scope: story?.storyScope,
+      })
+    )
+  );
 
   out.push(section("Provider telemetry", telemetryTable(input.telemetry)));
 

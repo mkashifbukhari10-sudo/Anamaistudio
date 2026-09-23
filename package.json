@@ -12,27 +12,33 @@
     "clean": "rm -rf dist build server.js",
     "hash-password": "tsx scripts/hash-password.ts",
     "generate-secret": "tsx scripts/generate-secret.ts",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx tests/life-journey.test.ts && tsx tests/story-quality.test.ts && tsx tests/beat-density.test.ts && tsx tests/scene-contract.test.ts && tsx tests/generation-guidance.test.ts && tsx tests/quality-gate.test.ts && tsx tests/validator-precision.test.ts && tsx tests/seam.test.ts && tsx tests/beat-clock.test.ts && tsx tests/frame-handoff.test.ts && tsx tests/performance-track.test.ts && tsx tests/seam-thread.test.ts && tsx tests/gate-phase5.test.ts && tsx tests/batch-drift.test.ts",
+    "calibrate": "tsx tests/calibrate-thresholds.ts && tsx tests/calibrate-beat-density.ts && tsx tests/calibrate-contract.ts && tsx tests/calibrate-action-density.ts && tsx tests/calibrate-world-text.ts && tsx tests/calibrate-redundancy.ts && tsx tests/calibrate-clock-redundancy.ts",
+    "measure": "tsx tests/measure-contract-cost.ts && tsx tests/measure-p3-prompt.ts && tsx tests/validate-seam.ts && tsx tests/calibrate-beat-clock.ts",
+    "check:gemini": "tsx tests/check-gemini.ts",
+    "brand": "node scripts/brand-clips.mjs"
   },
   "dependencies": {
+    "@google/genai": "^2.23.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
     "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "vite": "^6.2.3",
-    "express": "^4.21.2",
-    "dotenv": "^17.2.3",
-    "motion": "^12.23.24"
+    "vite": "^6.2.3"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3",
-    "@types/express": "^4.17.21"
+    "vite": "^6.2.3"
   }
 }

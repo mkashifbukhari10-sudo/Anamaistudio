@@ -1,3 +1,4 @@
+import { SECONDS_PER_SCENE, SHOT_LENGTH_PHRASE } from "../../shared/duration.js";
 import { Type } from "../ai/schema.js";
 import { buildCraftDoctrine, buildSceneCraftRules, storyScale } from "./story-craft.js";
 import { buildRecurringSeriesBlock, type RecurringSeriesBible } from "./recurring-series.js";
@@ -12,7 +13,9 @@ import {
   normalizeSocialDeltas,
 } from "./social-graph.js";
 import { buildWorldFactsBlock, isEmptyRegistry } from "./world-registry.js";
-import type { SocialGraph, SocialStateEntry, WorldRegistry } from "../../types.js";
+import { LIFE_JOURNEY_SCHEMA, journeyAllowedAtScale, maxPhasesFor } from "./life-journey.js";
+import { buildDistinctivenessReport, type DistinctivenessReport } from "./scene-distinctiveness.js";
+import type { SocialGraph, SocialStateEntry, StoryScope, WorldRegistry } from "../../types.js";
 
 /**
  * STORY INTELLIGENCE / CINEMATIC DIRECTOR ENGINE
@@ -353,6 +356,17 @@ export const BLUEPRINT_SCHEMA = {
           emotionalTemperature: { type: Type.STRING },
           charactersInFocus: { type: Type.ARRAY, items: { type: Type.STRING } },
           relationshipShift: { type: Type.STRING },
+          distinctScenesNeeded: {
+            type: Type.INTEGER,
+            description:
+              "How many MATERIALLY DIFFERENT scenes this beat's material actually contains. Count the distinct dramatic MOVES, not the scenes you were allocated. If the honest answer is smaller than the range, the range is too long - shorten it and give the runtime to new material.",
+          },
+          whatEachSceneDoes: {
+            type: Type.ARRAY,
+            description:
+              "ONE LINE PER ALLOCATED SCENE, in order, saying what that scene DOES - the change it produces, not the activity it depicts. 'They keep searching' is the same move as 'they search again'; 'the ledger shows a crate that was never delivered' is a different move. If two of your lines describe the same change in different words, this beat has fewer scenes than it was given.",
+            items: { type: Type.STRING },
+          },
         },
         required: ["beatNumber", "name", "chapterNumber", "sceneStart", "sceneEnd", "purpose", "causeFromPrevious", "consequence", "escalation", "emotionalTemperature", "charactersInFocus"],
       },
@@ -390,6 +404,29 @@ export const BLUEPRINT_SCHEMA = {
   required: ["logline", "theme", "centralQuestion", "castPlan", "socialGraph", "worldRegistry", "relationships", "beats", "setups", "chapters"],
 };
 
+/**
+ * The blueprint schema for one request.
+ *
+ * The life-journey field is OFFERED only where the runtime can carry it. This
+ * is a structural gate, not advice: below the threshold the property is not in
+ * the schema at all, so a six-scene story cannot be handed a shape it has no
+ * room to execute. It is never in the required list - its absence is the
+ * normal case and has to stay cost-free.
+ */
+export function buildBlueprintSchema(ctx: { targetSceneCount: number; storyScope?: StoryScope }): any {
+  if (!journeyAllowedAtScale(ctx.targetSceneCount, ctx.storyScope ?? "Auto")) {
+    return BLUEPRINT_SCHEMA;
+  }
+
+  return {
+    ...BLUEPRINT_SCHEMA,
+    properties: {
+      ...BLUEPRINT_SCHEMA.properties,
+      lifeJourney: LIFE_JOURNEY_SCHEMA,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1A prompts
 // ---------------------------------------------------------------------------
@@ -407,6 +444,11 @@ export interface BlueprintContext {
    * keeps runtime-based sizing. Controls SIZE only.
    */
   characterCount?: number;
+  /**
+   * Time shape for this story. 'Auto' lets the topic decide, which is the
+   * normal path. Only ever NARROWS what is offered - it never seeds content.
+   */
+  storyScope?: StoryScope;
   lockedCharacters?: any[];
   /**
    * OPTIONAL recurring-series mode. Undefined on the normal path, which keeps
@@ -454,6 +496,7 @@ export function buildBlueprintSystemInstruction(ctx: BlueprintContext): string {
     targetSceneCount: ctx.targetSceneCount,
     duration: ctx.duration,
     language: ctx.language,
+    storyScope: ctx.storyScope,
   })}
 
 You are a master animation story architect - the story department that works BEFORE any shot is planned. You are writing the structural blueprint for a ${ctx.duration} animated children's film ("${ctx.storyMode}" mode) told with anthropomorphic vegetable characters.
@@ -558,11 +601,40 @@ RULES:
 - Only plant what you will pay off. Do not leave promises open.
 
 ==================================================
-5. PACING - NO STRETCHED PLOTS, NO FILLER
+5. PACING AND BEAT DENSITY - WHERE STRETCHING ACTUALLY HAPPENS
 ==================================================
 - ${ctx.targetSceneCount} scenes is ${ctx.duration} of screen time. Scale the AMBITION of the story to fill it - more obstacles, deeper relationships, a genuine second act - not the same thin plot slowed down.
-- If the idea is too small for this runtime, deepen it with a second relationship line or a complication that raises cost. Never repeat the same beat with different words.
 - Chapters (${ctx.numChapters}) group beats; each chapter must end on a change of state, not a pause.
+
+THE DENSITY RULE (this is where a film gets padded):
+- A beat allocated N scenes must contain N MATERIALLY DIFFERENT DRAMATIC MOVES. Not N descriptions of one move. Not N scenes of the same activity.
+- For every beat, fill 'whatEachSceneDoes' with ONE LINE PER ALLOCATED SCENE, in order, stating what that scene DOES - the change it produces, not the activity it shows.
+- Then read your own lines back. If two of them describe the same change in different words, that beat has FEWER scenes than you gave it. Shorten the range.
+- Set 'distinctScenesNeeded' to the honest count of different moves. Do not simply repeat the number of scenes you were allocated - that number is checked against the lines you wrote, and a claim the lines do not support is worse than an honest smaller number.
+
+WHAT COUNTS AS A DIFFERENT MOVE:
+- Something is learned, decided, lost, gained, admitted, refused, revealed or broken that was not before.
+- A relationship stands somewhere new. A cost rises. What the characters believe about the problem changes.
+- "They try again" is a different move ONLY when the attempt costs something new, teaches something new, or closes an option. Three identical attempts are one move.
+- "They keep walking", "they keep searching", "they keep talking about it", "they are still happy" are not moves at all. They are the same move, repeated.
+
+WHAT IS LEGITIMATELY MULTI-SCENE - do not shorten these:
+- ESCALATING ATTEMPTS where each failure costs more or reveals more than the last.
+- An INVESTIGATION where each scene changes what is known.
+- A MONTAGE whose elements carry different meaning, not just different scenery.
+- An EMOTIONAL CONVERSATION that genuinely moves between people, line by line.
+- A RITUAL that returns visibly changed.
+- A CLIMAX where the situation materially changes at every step.
+- These are dense, not padded. The test is always the same: does each scene produce a different change?
+
+RESOLUTION COMPRESSES:
+- Arrival, celebration and aftermath are the most commonly over-allocated beats in long-form, and the most common way a film feels stretched.
+- Every closing scene still needs its own job: a consequence landing, a relationship settling somewhere new, a cost being paid, a final image.
+- There is NO required number of closing scenes. Judge each one: if it only shows the same happiness again, it does not exist.
+
+IF THE PREMISE IS TOO SMALL FOR THE RUNTIME:
+- ADD STORY. A complication that raises cost. A consequence from earlier that lands now. A relationship that shifts. A real obstacle. A setup that pays off. A second source of pressure running underneath the first.
+- NEVER lengthen a beat to absorb the extra scenes. A stretched beat is the failure this rule exists to prevent, and it is visible to the audience within seconds.
 
 LANGUAGE: Story-facing text (beat names, chapter titles, logline) in ${ctx.language}. Structural analysis fields (purpose, causeFromPrevious, consequence, escalation, voiceSignature) in English so the scene department can execute them precisely.`;
 }
@@ -576,7 +648,7 @@ export function buildBlueprintPrompt(ctx: BlueprintContext): string {
 
 - Topic / Idea: "${ctx.topic}"
 - Story Mode: ${ctx.storyMode}
-- Runtime: ${ctx.duration} = exactly ${ctx.targetSceneCount} scenes of 10 seconds each
+- Runtime: ${ctx.duration} = exactly ${ctx.targetSceneCount} scenes of ${SECONDS_PER_SCENE} seconds each
 - Chapters: ${ctx.numChapters}
 - Beat budget: about ${beats} beats (use fewer if the story is complete without them)
 - Cast: ${exactCast !== undefined ? `EXACTLY ${exactCast} characters (user-selected), each given a real dramatic function` : `${cast.min}-${cast.max} characters, each dramatically necessary`}
@@ -624,6 +696,17 @@ export interface BlueprintSlice {
   nextBeat: any | null;
   relevantSetups: any[];
   chapters: any[];
+  /**
+   * The P1 planned move for EACH scene in this range, not just the beat it
+   * belongs to. Handing a twelve-scene batch only "they search for the missing
+   * object" is how twelve searching scenes happen; handing it the twelve
+   * distinct moves the beat sheet already planned is the fix.
+   *
+   * Derived from `beat.whatEachSceneDoes`, which stays the planning authority.
+   * The generated SceneContract describes how the move was EXECUTED - it is
+   * not a second plan.
+   */
+  plannedMoves: Array<{ sceneNumber: number; beatNumber: number; move: string }>;
 }
 
 /**
@@ -656,6 +739,22 @@ export function sliceBlueprintForRange(blueprint: any, startScene: number, endSc
 
   const chapters: any[] = Array.isArray(blueprint.chapters) ? blueprint.chapters : [];
 
+  // Per-scene planned moves. whatEachSceneDoes[i] belongs to sceneStart + i,
+  // the same convention beat-density uses - one mapping, not two.
+  const plannedMoves: Array<{ sceneNumber: number; beatNumber: number; move: string }> = [];
+  for (const beat of sorted) {
+    const moves: string[] = Array.isArray(beat?.whatEachSceneDoes) ? beat.whatEachSceneDoes : [];
+    const beatStart = Number(beat?.sceneStart);
+    if (!Number.isFinite(beatStart)) continue;
+    moves.forEach((move, index) => {
+      const sceneNumber = beatStart + index;
+      if (sceneNumber < startScene || sceneNumber > endScene) return;
+      const text = String(move ?? "").trim();
+      if (text) plannedMoves.push({ sceneNumber, beatNumber: Number(beat?.beatNumber) || 0, move: text });
+    });
+  }
+  plannedMoves.sort((a, b) => a.sceneNumber - b.sceneNumber);
+
   return {
     logline: blueprint.logline || "",
     theme: blueprint.theme || "",
@@ -671,6 +770,7 @@ export function sliceBlueprintForRange(blueprint: any, startScene: number, endSc
     nextBeat: lastActiveIdx >= 0 && lastActiveIdx < sorted.length - 1 ? sorted[lastActiveIdx + 1] : null,
     relevantSetups,
     chapters,
+    plannedMoves,
   };
 }
 
@@ -685,6 +785,12 @@ export interface StoryMemory {
   beatsCompleted: string[];
   dialogueCounts: Record<string, number>;
   recentDialogue: string[];
+  /** Scene goals from the recent window, to stop a batch re-attempting one. */
+  recentGoals: string[];
+  /** Recent value changes: kind, value and direction, one line each. */
+  recentProgressions: string[];
+  /** Recent scene outcomes, so a whole film is not 'achieved'. */
+  recentOutcomes: string[];
   activeProps: string;
   openSetups: any[];
   emotionalTrajectory: string[];
@@ -720,6 +826,34 @@ function describeLedgerProps(scenesSoFar: any[]): string {
   const parts = [...held, ...placed.map((p) => `set down: ${p}`)];
   return parts.length > 0 ? truncate(parts.join("; "), 400) : "";
 }
+
+/**
+ * How many recent scenes' dialogue travels into the next batch.
+ *
+ * The previous bound was a flat ten LINES. At the density a real generation
+ * produced that was under two scenes - not enough to notice that a batch had
+ * restarted a conversation the previous batch already had.
+ *
+ * Six scenes is chosen from measured density rather than picked: after the
+ * speakability correction a dialogue scene carries two to four turns, so six
+ * scenes is roughly 12-24 lines. Six is also half a batch, which is what makes
+ * it cover the 12->13, 24->25, 36->37 and 48->49 seams - the places a new call
+ * has no idea what the previous call just wrote. Bounded deliberately: a
+ * sixty-scene film must not carry a growing transcript.
+ */
+const RECENT_DIALOGUE_SCENES = 6;
+
+/** Hard ceiling, so an unusually talkative stretch cannot inflate the prompt. */
+const MAX_RECENT_DIALOGUE_LINES = 24;
+
+/**
+ * How many recent scenes' dramatic jobs travel forward.
+ *
+ * Wider than the dialogue window because each entry is one short line, and a
+ * repeated dramatic job is detectable over a longer span than a repeated line.
+ * Eight scenes covers a seam plus enough either side to see a pattern.
+ */
+const RECENT_PROGRESSION_SCENES = 8;
 
 export function buildStoryMemory(scenesSoFar: any[], blueprint: any): StoryMemory | null {
   if (!Array.isArray(scenesSoFar) || scenesSoFar.length === 0) return null;
@@ -760,13 +894,59 @@ export function buildStoryMemory(scenesSoFar: any[], blueprint: any): StoryMemor
     .slice(-4)
     .map((s) => `S${s?.sceneNumber}: ${truncate(s?.facialExpressions, 70)}`);
 
+  // Dialogue from the recent WINDOW OF SCENES rather than a flat line count,
+  // so the amount carried forward scales with how talkative those scenes were
+  // instead of silently shrinking when density rises.
+  const dialogueWindow = ordered.slice(-RECENT_DIALOGUE_SCENES);
+  const windowLines: string[] = [];
+  dialogueWindow.forEach((s) => {
+    const turns = Array.isArray(s?.dialogueTurns) ? s.dialogueTurns : [];
+    turns.forEach((t: any) => {
+      if (t?.line) windowLines.push(`S${s?.sceneNumber} ${(t?.speaker || "").trim()}: ${t.line}`);
+    });
+  });
+  const recentLines = windowLines.slice(-MAX_RECENT_DIALOGUE_LINES);
+
+  // The dramatic job each recent scene did. Derived from the P2 contract where
+  // one exists, falling back to the prose gloss so an older story still
+  // contributes something rather than nothing.
+  const progressionWindow = ordered.slice(-RECENT_PROGRESSION_SCENES);
+
+  const recentGoals = progressionWindow
+    .map((s) => {
+      const goal = truncate(s?.contract?.goal, 90);
+      return goal ? `S${s?.sceneNumber}: ${goal}` : "";
+    })
+    .filter(Boolean);
+
+  const recentProgressions = progressionWindow
+    .map((s) => {
+      const p = s?.contract?.progression;
+      if (p && (p.value || p.before || p.after)) {
+        return `S${s?.sceneNumber}: [${truncate(p.kind, 20)}] ${truncate(p.value, 40)}: ${truncate(p.before, 40)} -> ${truncate(p.after, 40)}`;
+      }
+      const fallback = truncate(s?.storyFunction, 90);
+      return fallback ? `S${s?.sceneNumber}: ${fallback}` : "";
+    })
+    .filter(Boolean);
+
+  const recentOutcomes = progressionWindow
+    .map((s) => {
+      const outcome = truncate(s?.contract?.outcome, 20);
+      return outcome ? `S${s?.sceneNumber}: ${outcome}` : "";
+    })
+    .filter(Boolean);
+
   return {
     scenesCompleted: ordered.length,
     lastSceneNumber: last?.sceneNumber || 0,
     storySoFar,
     beatsCompleted,
     dialogueCounts,
-    recentDialogue: allLines.slice(-10),
+    recentDialogue: recentLines,
+    recentGoals,
+    recentProgressions,
+    recentOutcomes,
     // Accumulated across every scene, not just the last one, so an object
     // introduced early is still tracked when it matters forty scenes later.
     activeProps: describeLedgerProps(scenesSoFar) || truncate(last?.props, 200),
@@ -817,11 +997,11 @@ DIALOGUE LAWS:
 2. Every line must sound like its speaker's VOICE SIGNATURE above. If a line could be swapped between two characters unchanged, rewrite it.
 3. Never repeat a line, a sentiment or an exchange that has already occurred earlier in the film. Check the STORY SO FAR and RECENT DIALOGUE before writing.
 4. Dialogue advances or complicates - it never narrates what the audience can already see.
-5. Speak in ${language}; keep speaker tags and populate 'dialogueTurns'.
+5. Speak in ${language}; keep speaker tags and populate 'dialogueTurns'. How much talk a scene carries is set by its performance type and by what fits in the shot - see the craft rules above. Where characters do speak, they answer each other rather than each making one statement.
 
 ANTI-FILLER LAW (STRICT):
 - Every scene MUST change something: a fact learned, a relationship shifted, a decision made, a resource lost or gained, a location or emotional state moved.
-- State that change in the scene's 'storyFunction' field. If you cannot name a real change, the scene is filler - replace it with one that earns its ten seconds.
+- State that change in the scene's 'storyFunction' field. If you cannot name a real change, the scene is filler - replace it with one that earns its ${SECONDS_PER_SCENE} seconds.
 - Never pad by repeating an earlier beat with new wording, adding aimless travel, or restating the moral.
 
 CAUSALITY LAW:
@@ -831,6 +1011,19 @@ CAUSALITY LAW:
 
 RELATIONSHIP LAW:
 - Relationships evolve on-screen through behaviour, not narration. Show the shift in how characters address, interrupt, protect or withhold from each other.
+
+SCENE PROGRESSION RAIL - THINK IN THIS ORDER FOR EVERY SCENE:
+  SCENE GOAL -> OBSTACLE -> ACTION / INTERACTION -> OUTCOME -> NARRATIVE VALUE CHANGE -> HANDOFF
+- Record the result in 'contract': goal, obstacle, outcome, progression (kind, value, before, after) and performanceType.
+- A scene is not finished because something HAPPENED in it. It is finished when a VALUE has moved. "They kept going, determined" is activity; "his certainty about the route: confident -> shaken" is a scene.
+- 'progression.before' and 'progression.after' must be the SAME value at two different states. Two different events is the most common way this field goes wrong: "Golu enters the room -> Golu talks to Mooli" describes what the shot SHOWS, not what it CHANGES.
+- A SMALL change is completely valid. A held look that moves someone from unwilling to almost-willing is a scene. Not every scene needs a reversal, danger, or a big emotional swing.
+
+CHECK EACH SCENE AGAINST THE ONES YOU HAVE ALREADY WRITTEN IN THIS RESPONSE:
+- Before you finalise each scene, compare it with the scenes you have authored so far in THIS batch. You are writing them all at once, so nothing else will catch a repeat.
+- Two scenes must not share the same: scene goal; obstacle; outcome; progression kind AND value AND direction; primary physical action; conversational purpose; emotional beat.
+- If a scene is doing substantially the same dramatic job as the one before it, CHANGE THE SECOND SCENE'S DRAMATIC JOB. Do not reword it, do not move it somewhere else, and do not add a line of dialogue to disguise it. Give it a different thing to do, or let the beat be shorter.
+- Two scenes in a row with outcome "partial" on the same goal is the shape of a stalled film. Vary what actually happens: something is learned, refused, lost, decided, admitted or made worse.
 
 BEAT DISCIPLINE:
 - Each scene belongs to exactly one beat. Record it in 'beatNumber'.
@@ -882,14 +1075,40 @@ export function buildBlueprintPromptBlock(
     if (plannedBlock) sections.push(plannedBlock);
   }
 
+  // The per-scene planned moves lead, because they are the most specific
+  // instruction in the whole block. A batch handed only its beats gets "they
+  // search for the missing object" twelve times; a batch handed the twelve
+  // moves the beat sheet already planned has twelve different jobs to do.
+  if (slice && slice.plannedMoves.length > 0) {
+    sections.push(
+      `PLANNED MOVE FOR EACH SCENE IN THIS RANGE (from the beat sheet - this is the plan you are executing)
+=================================
+${slice.plannedMoves.map((m) => `  Scene ${m.sceneNumber} (beat ${m.beatNumber}): ${m.move}`).join("\n")}
+
+- Each scene EXECUTES its planned move. The scene's 'contract' should describe how that move actually played out - it is not a second plan and must not contradict this one.
+- If continuity makes a move impossible to stage literally, PRESERVE ITS DRAMATIC PURPOSE and adapt the staging. Changing what the scene DOES is not an adaptation.
+- Two planned moves are never the same job. If two of the lines above look alike to you, they are still two different scenes and you must find what separates them.`
+    );
+  }
+
   if (slice) {
+    // Per-scene moves are already delivered above, scoped to this batch.
+    // Repeating them inside the serialised beats would duplicate the planning
+    // layer, spend tokens twice, and hand the batch moves for scenes it is not
+    // writing - which is how a batch starts work that belongs to the next one.
+    const withoutMoves = (beat: any) => {
+      if (!beat || typeof beat !== "object") return beat;
+      const { whatEachSceneDoes, distinctScenesNeeded, ...rest } = beat;
+      return rest;
+    };
+
     sections.push(`NARRATIVE BLUEPRINT FOR THIS RANGE
 =================================
 BEATS TO DRAMATISE:
-${JSON.stringify(slice.activeBeats, null, 2)}
+${JSON.stringify(slice.activeBeats.map(withoutMoves), null, 2)}
 
-${slice.previousBeat ? `BEAT IMMEDIATELY BEFORE (this batch must continue its consequence):\n${JSON.stringify(slice.previousBeat, null, 2)}\n` : ""}
-${slice.nextBeat ? `BEAT IMMEDIATELY AFTER (this batch must set it up):\n${JSON.stringify(slice.nextBeat, null, 2)}\n` : ""}
+${slice.previousBeat ? `BEAT IMMEDIATELY BEFORE (this batch must continue its consequence):\n${JSON.stringify(withoutMoves(slice.previousBeat), null, 2)}\n` : ""}
+${slice.nextBeat ? `BEAT IMMEDIATELY AFTER (this batch must set it up):\n${JSON.stringify(withoutMoves(slice.nextBeat), null, 2)}\n` : ""}
 RELATIONSHIP ARCS (must visibly progress, not reset):
 ${JSON.stringify(slice.relationships, null, 2)}
 
@@ -911,6 +1130,18 @@ ${JSON.stringify(memory.dialogueCounts)}
 
 RECENT DIALOGUE - DO NOT REPEAT THESE LINES OR THEIR SENTIMENTS:
 ${memory.recentDialogue.join("\n")}
+
+DRAMATIC JOBS ALREADY DONE (do not repeat one of these as if it were new):
+${memory.recentProgressions.length > 0 ? memory.recentProgressions.join("\n") : "None recorded yet."}
+
+SCENE GOALS ALREADY ATTEMPTED:
+${memory.recentGoals.length > 0 ? memory.recentGoals.join("\n") : "None recorded yet."}
+
+HOW THOSE ATTEMPTS ENDED:
+${memory.recentOutcomes.length > 0 ? memory.recentOutcomes.join("\n") : "None recorded yet."}
+
+- THE SEAM YOU ARE OPENING: scene ${memory.lastSceneNumber} was written in a DIFFERENT call and you cannot see how it was staged beyond what is recorded here. The single most common failure at this join is restarting a dramatic job that has just been done. Read the three lists above before writing your first scene, and make it do something they do not.
+- Unresolved pressure carries across the seam. Whatever was left open at scene ${memory.lastSceneNumber} is still open now; do not resolve it off-screen and do not re-establish it as if it were new.
 
 EMOTIONAL TRAJECTORY (continue it, do not reset it):
 ${memory.emotionalTrajectory.join("\n")}
@@ -938,6 +1169,12 @@ export interface StoryQualityReport {
   castSize: number;
   castParticipation: Array<{ name: string; scenesPresent: number; sharePercent: number }>;
   dialogueDistribution: Array<{ speaker: string; lines: number; sharePercent: number }>;
+  /** Average spoken turns per scene. A ten-second scene should carry 4-6. */
+  averageTurnsPerScene: number;
+  /** Scenes with fewer than three turns - the "flat scene" signal. */
+  thinDialogueScenes: number[];
+  /** Scenes with no dialogue at all. Legitimate occasionally, not often. */
+  silentScenes: number[];
   silentCharacters: string[];
   repeatedDialogueLines: Array<{ line: string; occurrences: number }>;
   scenesMissingStoryFunction: number[];
@@ -947,6 +1184,12 @@ export interface StoryQualityReport {
   setupsPaidOff: number;
   unpaidSetups: string[];
   relationshipsTracked: number;
+  /**
+   * Cross-scene repetition. Every other metric here is either within-scene or
+   * a global aggregate, so nothing previously asked whether scene N differs
+   * from scene N-1 - which is the only question that catches a stretched film.
+   */
+  distinctiveness?: DistinctivenessReport;
 }
 
 function normalise(line: string): string {
@@ -1024,6 +1267,32 @@ export function buildStoryQualityReport(
   });
 
   const totalLines = Object.values(lineCounts).reduce((sum, n) => sum + n, 0);
+  // Dialogue WEIGHT, not just who speaks. A real generation produced 13 turns
+  // across 6 scenes with a narrator carrying the story, which reads flat; these
+  // numbers make that visible instead of leaving it to be noticed by eye.
+  const turnCounts = list.map((s) => (Array.isArray(s?.dialogueTurns) ? s.dialogueTurns.length : 0));
+  const totalTurns = turnCounts.reduce((sum, n) => sum + n, 0);
+  const averageTurnsPerScene = list.length > 0 ? Math.round((totalTurns / list.length) * 10) / 10 : 0;
+  // "Thin" is only meaningful for a scene that CHOSE to be a talking scene.
+  //
+  // The old rule flagged any scene under three turns, which pre-dated the
+  // speakability correction. On a real story it called 14 of 36 scenes thin -
+  // including a deliberate one-word beat ("...Beeju?" as the packet is carried
+  // away) and every silent, reaction and establishing shot in the film. Those
+  // are the scenes doing their job best.
+  //
+  // Performance type decides. Where a scene declares none (older stories), it
+  // is left alone rather than judged against a rule it was never written to.
+  const TALKING_TYPES = new Set(["dialogue-scene", "comedy-beat"]);
+  const thinDialogueScenes = list
+    .filter((s, i) => {
+      const type = String(s?.contract?.performanceType ?? "").trim().toLowerCase();
+      if (!TALKING_TYPES.has(type)) return false;
+      return turnCounts[i] > 0 && turnCounts[i] < 2;
+    })
+    .map((s) => s.sceneNumber);
+  const silentScenes = list.filter((s, i) => turnCounts[i] === 0).map((s) => s.sceneNumber);
+
   const dialogueDistribution = Object.entries(lineCounts)
     .map(([speaker, lines]) => ({
       speaker,
@@ -1108,6 +1377,9 @@ export function buildStoryQualityReport(
     castSize: cast.length,
     castParticipation,
     dialogueDistribution,
+    averageTurnsPerScene,
+    thinDialogueScenes,
+    silentScenes,
     silentCharacters,
     repeatedDialogueLines,
     scenesMissingStoryFunction,
@@ -1117,5 +1389,11 @@ export function buildStoryQualityReport(
     setupsPaidOff,
     unpaidSetups,
     relationshipsTracked: blueprint && Array.isArray(blueprint.relationships) ? blueprint.relationships.length : 0,
+    distinctiveness: buildDistinctivenessReport({
+      scenes: list,
+      characters: cast,
+      lifeJourney: blueprint?.lifeJourney ?? null,
+      setups,
+    }),
   };
 }

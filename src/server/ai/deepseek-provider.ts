@@ -83,8 +83,20 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 120000;
  */
 export const MAX_SCENES_PER_BATCH = 12;
 
-/** Per-attempt ceiling. Long structured batches legitimately take a while. */
-const TEXT_TIMEOUT_MS = 180000;
+/**
+ * Per-attempt ceiling.
+ *
+ * Measured, not guessed: a six-scene batch took 132s and returned ~30k
+ * completion tokens. Twelve scenes carrying four to six dialogue turns each is
+ * roughly double that, so the previous 180s ceiling would have timed out every
+ * full batch of a sixty-scene film and forced the split/retry path to do the
+ * whole job - at 180s wasted per doomed attempt.
+ *
+ * Seven minutes leaves real headroom over that estimate while still bounding a
+ * genuinely hung connection. Batch splitting remains the recovery path; this
+ * just stops it firing on runs that were only ever slow, not broken.
+ */
+const TEXT_TIMEOUT_MS = 420000;
 
 /** Clamp a caller's request to something the model will actually accept. */
 export function resolveMaxOutputTokens(requested?: number): number {

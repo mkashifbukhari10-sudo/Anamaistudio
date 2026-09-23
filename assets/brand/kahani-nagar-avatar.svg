@@ -1,0 +1,74 @@
+<!--
+  KAHANI NAGAR - Page profile picture.
+
+  THE CONSTRAINT THAT DROVE EVERY DECISION
+
+  This renders as a 40-pixel circle beside the Page name in feed. That is the
+  size that matters - not the 176px on the Page itself, and certainly not the
+  720px you are looking at now. At 40px there is room for ONE shape and TWO
+  values. Everything here is built backwards from that.
+
+  Hence: no wordmark, no "AS" monogram, no scene, no gradient finer than the
+  eye can resolve, and a single light source on a dark ground.
+
+  WHY A LANTERN
+
+  It is already the signature of the films - Roshni Ke Diye is named for it,
+  and Teen Rotiyaan is lit end to end by a kerosene lantern and closes on Ammi
+  blowing it out. This is not a new idea being bolted on; it is the thing the
+  work already looks like. It also says "bedtime story" without a word of text,
+  and it belongs to no single series, so a new cast never outdates it.
+
+  Upload at 720x720. Facebook crops to a circle and eats roughly the outer 10%,
+  so the lantern sits inside a 62% centre box with deliberate air around it.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" width="720" height="720">
+  <defs>
+    <!-- The halo. Wide and soft so that at 40px the whole avatar reads as a
+         warm glow even when the lantern itself is barely two pixels wide. -->
+    <radialGradient id="halo" cx="50%" cy="47%" r="50%">
+      <stop offset="0%"   stop-color="#FFB74A" stop-opacity="0.55" />
+      <stop offset="38%"  stop-color="#F09B2E" stop-opacity="0.22" />
+      <stop offset="72%"  stop-color="#1E2A4D" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- The flame body: hot cream core falling off to amber. -->
+    <radialGradient id="flame" cx="50%" cy="58%" r="55%">
+      <stop offset="0%"   stop-color="#FFF6DC" />
+      <stop offset="45%"  stop-color="#FFD37A" />
+      <stop offset="100%" stop-color="#F5A623" />
+    </radialGradient>
+  </defs>
+
+  <!-- Ground. Deep indigo, the night the films are mostly set in. -->
+  <rect width="720" height="720" fill="#141B33" />
+  <circle cx="360" cy="338" r="360" fill="url(#halo)" />
+
+  <g fill="#FFC969">
+    <!-- Bail handle. One stroke, kept thick enough to survive downscaling. -->
+    <path d="M336 150 C336 112 384 112 384 150 L384 176 L366 176 L366 152
+             C366 134 354 134 354 152 L354 176 L336 176 Z" />
+    <!-- Cap -->
+    <path d="M300 178 L420 178 L406 216 L314 216 Z" />
+    <!-- Base -->
+    <path d="M306 486 L414 486 L414 522 L306 522 Z" />
+    <path d="M292 522 L428 522 L428 552 L292 552 Z" />
+  </g>
+
+  <!-- Glass. The one bright mass - this is what the eye finds at 40px. -->
+  <path d="M318 216 L402 216 C418 268 424 330 424 372 C424 434 402 486 360 486
+           C318 486 296 434 296 372 C296 330 302 268 318 216 Z"
+        fill="url(#flame)" />
+
+  <!-- Two uprights. They break the glass into a readable lantern rather than a
+       plain blob, and they are the first detail to disappear when the image is
+       scaled down - which is correct, because by then the glow is doing the work. -->
+  <g fill="#141B33" opacity="0.32">
+    <rect x="322" y="220" width="13" height="262" rx="6" />
+    <rect x="385" y="220" width="13" height="262" rx="6" />
+  </g>
+
+  <!-- Wick. A single darker note so the light has an origin. -->
+  <path d="M360 330 C349 350 352 372 360 386 C368 372 371 350 360 330 Z"
+        fill="#E8801A" opacity="0.55" />
+</svg>

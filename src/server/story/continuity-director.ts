@@ -44,8 +44,15 @@ import { EMPTY_DIALOGUE_VALUES } from "../../types.js";
 export function isEmptyDialogue(value: unknown): boolean {
   const text = String(value ?? "").trim();
   if (!text) return true;
+
   const bare = text.replace(/^["'\s.]+|["'\s.]+$/g, "").toLowerCase();
-  return EMPTY_DIALOGUE_VALUES.includes(bare);
+  if (EMPTY_DIALOGUE_VALUES.includes(bare)) return true;
+
+  // A real generation wrote "None / Visual Action - ten wordless seconds. The
+  // only voice is Foley: ..." - a placeholder that then DESCRIBES the silence.
+  // Matched as a prefix followed by a separator, so it cannot swallow a real
+  // line that merely begins with one of these words ("None of us knew...").
+  return /^(none|no dialogue|n\/a|silent|visual action|none \/ visual action)\s*[/\-\u2013\u2014:,.]/i.test(text);
 }
 
 /**
@@ -176,6 +183,148 @@ export function normalizeContinuityState(raw: any): ContinuityState | undefined 
 // introduced in scene 4 and needed in scene 40 leaves no trace.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// SEMANTIC COMPARISON
+//
+// These replace prose equality in four checks that were producing more false
+// findings than real ones on a real 36-scene generation:
+//
+//   screenDirection  4 warnings, ALL false. Two of them differed only in
+//                    punctuation: "...with Beeju at frame left and Ankuri at
+//                    frame right" vs "..., Beeju at frame left, Ankuri at
+//                    frame right".
+//   location         4 warnings, ALL false. Every pair shared a placeId and
+//                    differed only in how the corner of the room was worded.
+//   heldProps        3 warnings, ALL false. The "held object" that vanished
+//                    was the string "nothing in his hands".
+//   character exit   2 warnings, false. A tightening to a two-shot dropped
+//                    people who had not moved.
+//
+// The principle throughout: compare MEANING where meaning can be extracted,
+// and stay silent where it cannot. A check that fires on rewording teaches a
+// writer to reword, not to fix anything.
+// ---------------------------------------------------------------------------
+
+/**
+ * The directional axis a camera note describes, or null when the prose carries
+ * no directional claim at all.
+ *
+ * Only genuinely opposed axes can conflict. Everything else - "toward the pot",
+ * "settled side-on", added punctuation - is detail about the same movement and
+ * must not read as a reversal.
+ */
+export type ScreenAxis = "left-to-right" | "right-to-left" | "toward-camera" | "away-from-camera" | "vertical";
+
+export function screenAxis(text: unknown): ScreenAxis | null {
+  const s = String(text ?? "").toLowerCase();
+  if (!s.trim()) return null;
+
+  // Explicit travel axes win over positional mentions of left/right, because a
+  // frame can hold someone at frame left while the action still reads
+  // left-to-right.
+  if (/\bleft[\s-]*to[\s-]*right\b|\bl\s*-?\s*>\s*r\b/.test(s)) return "left-to-right";
+  if (/\bright[\s-]*to[\s-]*left\b|\br\s*-?\s*>\s*l\b/.test(s)) return "right-to-left";
+
+  if (/\b(toward|towards|into)\s+(the\s+)?camera\b|\bfrontal\b/.test(s)) return "toward-camera";
+  if (/\b(away from|out of)\s+(the\s+)?camera\b|\baway from the lens\b/.test(s)) return "away-from-camera";
+  if (/\bvertical(ly)?\b|\bup[\s-]*and[\s-]*down\b/.test(s)) return "vertical";
+
+  // Directional facing or motion, but only when the wording is about heading
+  // somewhere - not merely "at frame right", which is a position.
+  const rightward = /\b(toward|towards|to)\s+(the\s+)?(frame\s+)?right\b|\bfaces?\s+right\b|\brightward\b|\bheads?\s+right\b/.test(s);
+  const leftward = /\b(toward|towards|to)\s+(the\s+)?(frame\s+)?left\b|\bfaces?\s+left\b|\bleftward\b|\bheads?\s+left\b/.test(s);
+
+  // Both directions named: this is a layout description ("Beeju at frame left
+  // and Ankuri at frame right"), not a travel direction.
+  if (rightward && leftward) return null;
+  if (rightward) return "left-to-right";
+  if (leftward) return "right-to-left";
+
+  return null;
+}
+
+/** True only when two camera notes make genuinely opposed directional claims. */
+export function screenDirectionConflicts(before: unknown, after: unknown): boolean {
+  const a = screenAxis(before);
+  const b = screenAxis(after);
+  if (!a || !b || a === b) return false;
+
+  const opposed: Array<[ScreenAxis, ScreenAxis]> = [
+    ["left-to-right", "right-to-left"],
+    ["toward-camera", "away-from-camera"],
+  ];
+  return opposed.some(([x, y]) => (a === x && b === y) || (a === y && b === x));
+}
+
+/**
+ * Words that mean "holding nothing".
+ *
+ * A generation writes an empty hand as prose - "nothing", "hands open at his
+ * sides" - and the vanishing-prop check then compared that description as
+ * though it were an object, reporting that "nothing in his hands" had
+ * disappeared.
+ */
+const EMPTY_HAND_PATTERNS = [
+  /^nothing\b/,
+  /^none$/,
+  /^-+$/,
+  /^n\/?a$/,
+  /\bempty[\s-]*handed\b/,
+  /\bhands?\s+(are\s+)?(empty|free|open|loose)\b/,
+  /\bnothing\s+in\s+(his|her|their|its)\s+hands?\b/,
+  /\bno\s+(prop|object|item)s?\b/,
+];
+
+/** True when a heldProps value describes an empty hand rather than an object. */
+export function isEmptyHanded(value: unknown): boolean {
+  const s = clean(value).toLowerCase().replace(/[.,;]+$/, "");
+  if (!s) return true;
+  return EMPTY_HAND_PATTERNS.some((p) => p.test(s));
+}
+
+/**
+ * Framing that deliberately shows a SUBSET of the people in the scene.
+ *
+ * A two-shot, an over-the-shoulder or a single explains why others are out of
+ * frame without anyone having left. The previous rank-based test could not see
+ * this, because "medium two-shot" ranks the same as "medium" and is therefore
+ * not "tighter" - so a legitimate reframe read as two characters vanishing.
+ */
+export function isSelectiveFraming(shotSize: unknown): boolean {
+  const s = String(shotSize ?? "").toLowerCase();
+  return /\b(two[\s-]*shot|2[\s-]*shot|over[\s-]*the[\s-]*shoulder|ots\b|single\b|insert\b|close on\b|macro\b|extreme close)/.test(s);
+}
+
+/**
+ * Times of day that open a day and close one.
+ *
+ * Used only to recognise a legitimate overnight wrap. The real fix is
+ * `StoryTimeMarker.dayIndex`, which the scene pipeline does not yet populate;
+ * where it IS present it is preferred, and this prose fallback is what stops
+ * every night -> dawn transition reading as time travel in the meantime.
+ */
+const DAY_OPENING = /\b(dawn|sunrise|first light|early morning|morning|subah|savera)\b/i;
+const DAY_CLOSING = /\b(evening|night|midnight|dusk|twilight|late night|raat|shaam)\b/i;
+
+/**
+ * True when the pair is a normal overnight wrap rather than time running
+ * backwards.
+ *
+ * Prefers a real day counter when the scenes carry one; falls back to
+ * recognising a closing time followed by an opening time.
+ */
+export function crossesIntoNewDay(prev: any, curr: any): boolean {
+  const prevDay = Number(prev?.storyTime?.dayIndex);
+  const currDay = Number(curr?.storyTime?.dayIndex);
+  if (Number.isFinite(prevDay) && Number.isFinite(currDay)) {
+    return currDay > prevDay;
+  }
+
+  const prevTime = String(prev?.continuityState?.timeOfDay ?? "");
+  const currTime = String(curr?.continuityState?.timeOfDay ?? "");
+  return DAY_CLOSING.test(prevTime) && DAY_OPENING.test(currTime);
+}
+
 export interface ContinuityLedger {
   lastSceneNumber: number;
   characters: Map<string, CharacterSnapshot>;
@@ -187,6 +336,50 @@ export interface ContinuityLedger {
   lighting: string;
   environmentState: string;
   camera: CameraState | undefined;
+  /** How many scenes in a row have now played in 'location'. */
+  placeRun: number;
+  /** Scenes folded so far, so a run can be expressed as a share of the film. */
+  scenesFolded: number;
+}
+
+/**
+ * A place name reduced to the words that identify it.
+ *
+ * The same room is written a dozen ways across a film - "Cottage living room",
+ * "the low-ceilinged living room of the cottage", "Living room dastarkhwan" -
+ * so a run has to be counted on content words, not on the literal string.
+ */
+function normalisePlace(name: unknown): string[] {
+  return String(name ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !/^(the|and|of|a|an|in|at|on|its|with|near|inside|outside|low|small|old)$/.test(w))
+    .sort();
+}
+
+/**
+ * Whether two place names denote the same place.
+ *
+ * Exact equality is too strict: a room picks up and loses adjectives as the
+ * film describes it - "Cottage living room" becomes "the low-ceilinged living
+ * room of the cottage" - and an exact compare restarts the run on every
+ * rewording, which is precisely the blindness being fixed. Containment handles
+ * the added adjective; the overlap floor handles two descriptions that share
+ * most of their content words in different orders.
+ */
+function isSamePlace(a: unknown, b: unknown): boolean {
+  const left = normalisePlace(a);
+  const right = normalisePlace(b);
+  if (left.length === 0 || right.length === 0) return false;
+
+  const small = left.length <= right.length ? new Set(left) : new Set(right);
+  const large = left.length <= right.length ? new Set(right) : new Set(left);
+  let shared = 0;
+  for (const token of small) if (large.has(token)) shared += 1;
+
+  if (shared === small.size) return true;
+  return shared / (small.size + large.size - shared) >= 0.6;
 }
 
 export function createLedger(): ContinuityLedger {
@@ -201,6 +394,8 @@ export function createLedger(): ContinuityLedger {
     lighting: "",
     environmentState: "",
     camera: undefined,
+    placeRun: 0,
+    scenesFolded: 0,
   };
 }
 
@@ -236,7 +431,16 @@ export function foldSceneIntoLedger(ledger: ContinuityLedger, scene: any): Conti
     ledger.openClosedObjects.set(name.trim(), value.trim());
   }
 
-  if (state.location) ledger.location = state.location;
+  ledger.scenesFolded += 1;
+  if (state.location) {
+    // A run is counted on the NORMALISED name, because the same room comes back
+    // as "Cottage living room" and "the living room of the cottage" and a raw
+    // string compare would restart the count on every rewording.
+    ledger.placeRun = isSamePlace(state.location, ledger.location) ? ledger.placeRun + 1 : 1;
+    ledger.location = state.location;
+  } else if (ledger.location) {
+    ledger.placeRun += 1;
+  }
   if (state.timeOfDay) ledger.timeOfDay = state.timeOfDay;
   if (state.weather) ledger.weather = state.weather;
   if (state.lighting) ledger.lighting = state.lighting;
@@ -274,7 +478,26 @@ export function buildLedgerBlock(ledger: ContinuityLedger): string {
   }
 
   const world: string[] = [];
-  if (ledger.location) world.push(`Location: ${ledger.location}`);
+  if (ledger.location) {
+    world.push(`Location: ${ledger.location}`);
+    // Stated so the scene department can SEE how long the film has sat still.
+    // A real 36-scene film spent its last 22 shots - 3m40s of 6m - on one mat,
+    // and no batch ever knew, because each one only saw the current location
+    // and never how long it had already been the current location.
+    if (ledger.placeRun >= 4) {
+      const share = ledger.scenesFolded > 0
+        ? Math.round((ledger.placeRun / ledger.scenesFolded) * 100)
+        : 0;
+      world.push(
+        `PLACE RUN: the film has now played ${ledger.placeRun} consecutive scenes in this one location ` +
+          `(${share}% of everything shot so far). This is a FACT, not an instruction - a single-location story is ` +
+          `a legitimate form and moving for the sake of moving is worse than staying. But if the story has a ` +
+          `reason to be somewhere else, or if a beat can be played at a window, a doorway, a different corner or ` +
+          `from outside, take it: assembled clips that never change place read as visually static however good ` +
+          `the writing is.`
+      );
+    }
+  }
   if (ledger.timeOfDay) world.push(`Time: ${ledger.timeOfDay}`);
   if (ledger.weather) world.push(`Weather: ${ledger.weather}`);
   if (ledger.lighting) world.push(`Lighting: ${ledger.lighting}`);
@@ -500,7 +723,12 @@ export function validateContinuity(scenes: any[]): void {
     // A tighter shot, or a cut to a new moment, legitimately excludes people
     // who are still there. Only a reframe that does NOT explain the absence is
     // worth reporting.
-    const reframed = framingTightened(prevState, currState);
+    // A tighter shot OR a deliberately selective one explains people being out
+    // of frame. The rank test alone could not see the second case: "medium
+    // two-shot" ranks the same as "medium", so a legitimate reframe onto two
+    // characters read as everyone else vanishing.
+    const reframed =
+      framingTightened(prevState, currState) || isSelectiveFraming(currState?.cameraState?.shotSize);
     const newMoment =
       !isChain &&
       ((prevState?.placeId && currState?.placeId && prevState.placeId !== currState.placeId) ||
@@ -525,6 +753,10 @@ export function validateContinuity(scenes: any[]): void {
     if (prevState && currState) {
       // --- Held props ------------------------------------------------------
       for (const [who, held] of Object.entries(prevState.heldProps || {})) {
+        // "nothing in his hands" is a description of an empty hand, not a prop.
+        // Without this the check reported that nothing had disappeared.
+        if (isEmptyHanded(held)) continue;
+
         const stillHeld = (currState.heldProps || {})[who];
         if (stillHeld && stillHeld.toLowerCase() === held.toLowerCase()) continue;
 
@@ -592,7 +824,18 @@ export function validateContinuity(scenes: any[]): void {
           }
         }
 
-        if (prevState.location && currState.location && prevState.location.toLowerCase() !== currState.location.toLowerCase()) {
+        // placeId IS the location identity. Two scenes in the same registered
+        // place may legitimately describe different corners of it, and comparing
+        // that prose reported four false CHAIN breaks on one real story.
+        const samePlaceId =
+          Boolean(prevState.placeId) && Boolean(currState.placeId) && prevState.placeId === currState.placeId;
+
+        if (
+          !samePlaceId &&
+          prevState.location &&
+          currState.location &&
+          prevState.location.toLowerCase() !== currState.location.toLowerCase()
+        ) {
           issues.push(
             issue(
               curr.sceneNumber,
@@ -622,9 +865,17 @@ export function validateContinuity(scenes: any[]): void {
       }
 
       // --- Time runs backwards ---------------------------------------------
+      // Time of day is a position within ONE day, so a wrap past midnight looks
+      // like it runs backwards. A night -> dawn transition is the commonest
+      // move in any story that spans an evening, and it was being reported as
+      // time travel on every occurrence.
+      //
+      // Uses StoryTimeMarker.dayIndex when the scenes carry one - no second
+      // time system is introduced here - and falls back to recognising the
+      // wrap in prose while the scene pipeline does not yet populate it.
       const prevRank = timeRank(prevState.timeOfDay);
       const currRank = timeRank(currState.timeOfDay);
-      if (prevRank >= 0 && currRank >= 0 && currRank < prevRank) {
+      if (prevRank >= 0 && currRank >= 0 && currRank < prevRank && !crossesIntoNewDay(prev, curr)) {
         issues.push(
           issue(
             curr.sceneNumber,
@@ -696,12 +947,10 @@ export function validateContinuity(scenes: any[]): void {
           repeatedShotRun = 0;
         }
 
-        if (
-          isChain &&
-          prevCam.screenDirection &&
-          currCam.screenDirection &&
-          prevCam.screenDirection.toLowerCase() !== currCam.screenDirection.toLowerCase()
-        ) {
+        // Semantic, not textual. Two notes describing the same movement in
+        // different words are not a reversal - and on a real generation every
+        // one of these findings was exactly that.
+        if (isChain && screenDirectionConflicts(prevCam.screenDirection, currCam.screenDirection)) {
           issues.push(
             issue(
               curr.sceneNumber,

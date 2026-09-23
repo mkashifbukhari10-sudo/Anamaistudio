@@ -97,3 +97,23 @@ export function summariseCalls(records: AICallRecord[]): {
     totalLatencyMs: sum((r) => r.latencyMs),
   };
 }
+
+/**
+ * Which provider and model actually served this run.
+ *
+ * The report used to hardcode "deepseek" / "deepseek-flash", which became a
+ * false claim the moment a second provider was registered - and a report that
+ * misnames its own source is worse than one that says "unknown". Read from the
+ * calls that actually succeeded, preferring the most recent.
+ */
+export function attributionFrom(records: AICallRecord[]): { provider: string; model: string } {
+  const list = Array.isArray(records) ? records : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const r = list[i];
+    if (r?.outcome === "success" && r.provider && r.model) {
+      return { provider: r.provider, model: r.model };
+    }
+  }
+  const last = list[list.length - 1];
+  return { provider: last?.provider || "unknown", model: last?.model || "unknown" };
+}

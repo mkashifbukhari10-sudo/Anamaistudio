@@ -1,3 +1,4 @@
+import { SHOT_LENGTH_LABEL } from '../shared/duration';
 import React from 'react';
 import {
   Film,
@@ -26,7 +27,67 @@ interface SidebarProps {
   isOpenMobile: boolean;
   onCloseMobile: () => void;
   onLoadSampleStory?: () => void;
+  /**
+   * True when the main area is showing the setup workbench rather than a
+   * workspace section.
+   *
+   * Without this the sidebar could only describe HALF the app's state: it
+   * highlighted a Production Workspace item while the setup form was actually
+   * on screen, so the selected item pointed at something the user was not
+   * looking at.
+   */
+  isSetupView?: boolean;
 }
+
+/**
+ * One Production Workspace navigation item.
+ *
+ * Extracted because six near-identical copies had to grow the same disabled
+ * and active rules, and six copies of a rule is six chances to get it wrong.
+ * The markup and classes are unchanged from the inline versions.
+ */
+const NavItem: React.FC<{
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  isActive: boolean;
+  isDisabled: boolean;
+  disabledReason: string;
+  onClick: () => void;
+  badge?: React.ReactNode;
+  tone?: 'default' | 'flow';
+}> = ({ id, label, icon, isActive, isDisabled, disabledReason, onClick, badge, tone = 'default' }) => {
+  const base =
+    'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-colors text-left';
+
+  const state = isDisabled
+    ? 'text-slate-400 cursor-not-allowed font-medium'
+    : isActive
+    ? tone === 'flow'
+      ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold shadow-xs cursor-pointer'
+      : 'bg-slate-100 text-slate-900 font-bold border border-slate-200 shadow-xs cursor-pointer'
+    : tone === 'flow'
+    ? 'text-emerald-800 hover:bg-slate-50 hover:text-emerald-950 font-medium cursor-pointer'
+    : 'text-slate-700 hover:bg-slate-50 hover:text-slate-950 font-medium cursor-pointer';
+
+  return (
+    <button
+      type="button"
+      id={id}
+      onClick={onClick}
+      disabled={isDisabled}
+      aria-current={isActive ? 'page' : undefined}
+      title={isDisabled ? disabledReason : label}
+      className={`${base} ${state}`}
+    >
+      <div className={`flex items-center gap-2.5 ${isDisabled ? 'opacity-60' : ''}`}>
+        {icon}
+        <span>{label}</span>
+      </div>
+      {badge}
+    </button>
+  );
+};
 
 export const Sidebar: React.FC<SidebarProps> = ({
   activeTab,
@@ -39,6 +100,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpenMobile,
   onCloseMobile,
   onLoadSampleStory,
+  isSetupView = false,
 }) => {
   const charactersCount = story?.characters?.length || 0;
   const scenesCount = story?.scenes?.length || 0;
@@ -47,6 +109,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onSelectTab(tab);
     onCloseMobile();
   };
+
+  // Every workspace section reads from a generated story. With none, there is
+  // nothing to navigate to, so the items say so instead of accepting a click
+  // that cannot change anything.
+  const workspaceLocked = !hasActiveStory;
+  const lockedReason = 'Generate a story first - this section opens once a story exists.';
+
+  /** Highlighted only when this section is genuinely what is on screen. */
+  const isTabActive = (tab: StudioTab) => hasActiveStory && !isSetupView && activeTab === tab;
 
   return (
     <>
@@ -104,7 +175,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 onNewStory();
                 onCloseMobile();
               }}
-              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-800 hover:bg-slate-100 hover:text-slate-950 transition-colors cursor-pointer text-left"
+              aria-current={isSetupView ? 'page' : undefined}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer text-left ${
+                isSetupView
+                  ? 'bg-slate-100 text-slate-900 border border-slate-200 shadow-xs'
+                  : 'text-slate-800 hover:bg-slate-100 hover:text-slate-950'
+              }`}
             >
               <PlusCircle className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>New Story Setup</span>
@@ -157,114 +233,85 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
             </div>
 
-            <button
-              type="button"
+            <NavItem
               id="sidebar-tab-story"
+              label="Story Screenplay"
+              icon={<BookOpen className="w-4 h-4 text-emerald-600 shrink-0" />}
+              isActive={isTabActive('story')}
+              isDisabled={workspaceLocked}
+              disabledReason={lockedReason}
               onClick={() => handleNavClick('story')}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer text-left ${
-                activeTab === 'story'
-                  ? 'bg-slate-100 text-slate-900 font-bold border border-slate-200 shadow-xs'
-                  : 'text-slate-700 hover:bg-slate-50 hover:text-slate-950 font-medium'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <BookOpen className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>Story Screenplay</span>
-              </div>
-            </button>
+            />
 
-            <button
-              type="button"
+            <NavItem
               id="sidebar-tab-characters"
+              label="Character Bible"
+              icon={<Users className="w-4 h-4 text-amber-600 shrink-0" />}
+              isActive={isTabActive('characters')}
+              isDisabled={workspaceLocked}
+              disabledReason={lockedReason}
               onClick={() => handleNavClick('characters')}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer text-left ${
-                activeTab === 'characters'
-                  ? 'bg-slate-100 text-slate-900 font-bold border border-slate-200 shadow-xs'
-                  : 'text-slate-700 hover:bg-slate-50 hover:text-slate-950 font-medium'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Users className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>Character Bible</span>
-              </div>
-              {charactersCount > 0 && (
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-amber-800 border border-slate-200 font-bold">
-                  {charactersCount}
-                </span>
-              )}
-            </button>
+              badge={
+                charactersCount > 0 ? (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-amber-800 border border-slate-200 font-bold">
+                    {charactersCount}
+                  </span>
+                ) : undefined
+              }
+            />
 
-            <button
-              type="button"
+            <NavItem
               id="sidebar-tab-references"
+              label="Reference Studio"
+              icon={<ImageIcon className="w-4 h-4 text-emerald-600 shrink-0" />}
+              isActive={isTabActive('references')}
+              isDisabled={workspaceLocked}
+              disabledReason={lockedReason}
               onClick={() => handleNavClick('references')}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer text-left ${
-                activeTab === 'references'
-                  ? 'bg-slate-100 text-slate-900 font-bold border border-slate-200 shadow-xs'
-                  : 'text-slate-700 hover:bg-slate-50 hover:text-slate-950 font-medium'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <ImageIcon className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>Reference Studio</span>
-              </div>
-            </button>
+            />
 
-            <button
-              type="button"
+            <NavItem
               id="sidebar-tab-scenes"
+              label={`${SHOT_LENGTH_LABEL} Scene Planner`}
+              icon={<Clapperboard className="w-4 h-4 text-orange-600 shrink-0" />}
+              isActive={isTabActive('scenes')}
+              isDisabled={workspaceLocked}
+              disabledReason={lockedReason}
               onClick={() => handleNavClick('scenes')}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer text-left ${
-                activeTab === 'scenes'
-                  ? 'bg-slate-100 text-slate-900 font-bold border border-slate-200 shadow-xs'
-                  : 'text-slate-700 hover:bg-slate-50 hover:text-slate-950 font-medium'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Clapperboard className="w-4 h-4 text-orange-600 shrink-0" />
-                <span>10s Scene Planner</span>
-              </div>
-              {scenesCount > 0 && (
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-orange-800 border border-slate-200 font-bold">
-                  {scenesCount}
-                </span>
-              )}
-            </button>
+              badge={
+                scenesCount > 0 ? (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-orange-800 border border-slate-200 font-bold">
+                    {scenesCount}
+                  </span>
+                ) : undefined
+              }
+            />
 
-            <button
-              type="button"
+            <NavItem
               id="sidebar-tab-flow"
+              label="Flow Production"
+              tone="flow"
+              icon={<Video className="w-4 h-4 text-emerald-600 shrink-0" />}
+              isActive={isTabActive('flow-production')}
+              isDisabled={workspaceLocked}
+              disabledReason={lockedReason}
               onClick={() => handleNavClick('flow-production')}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer text-left ${
-                activeTab === 'flow-production'
-                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold shadow-xs'
-                  : 'text-emerald-800 hover:bg-slate-50 hover:text-emerald-950 font-medium'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Video className="w-4 h-4 text-emerald-600 shrink-0" />
-                <span>Flow Production</span>
-              </div>
-              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">
-                Veo
-              </span>
-            </button>
+              badge={
+                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">
+                  Veo
+                </span>
+              }
+            />
 
-            <button
-              type="button"
+            <NavItem
               id="sidebar-tab-checklist"
+              label="Checklist & Report"
+              icon={<CheckSquare className="w-4 h-4 text-amber-600 shrink-0" />}
+              isActive={isTabActive('checklist')}
+              isDisabled={workspaceLocked}
+              disabledReason={lockedReason}
               onClick={() => handleNavClick('checklist')}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer text-left ${
-                activeTab === 'checklist'
-                  ? 'bg-slate-100 text-slate-900 font-bold border border-slate-200 shadow-xs'
-                  : 'text-slate-700 hover:bg-slate-50 hover:text-slate-950 font-medium'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <CheckSquare className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>Checklist & Report</span>
-              </div>
-            </button>
+            />
           </div>
 
           {/* Section: EXPORT */}
@@ -279,7 +326,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 onOpenExportPackage();
                 onCloseMobile();
               }}
-              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-800 hover:bg-slate-100 hover:text-slate-950 transition-colors cursor-pointer text-left"
+              disabled={workspaceLocked}
+              title={workspaceLocked ? lockedReason : 'Open the production package'}
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-colors text-left ${
+                workspaceLocked
+                  ? 'text-slate-400 cursor-not-allowed opacity-60'
+                  : 'text-slate-800 hover:bg-slate-100 hover:text-slate-950 cursor-pointer'
+              }`}
             >
               <Package className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>Production Package</span>
@@ -302,7 +355,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <div className="flex items-center justify-between font-mono text-[10px]">
               <span className="text-slate-700 font-bold">SCENES</span>
-              <span className="text-slate-900 font-bold">{story.scenes?.length || 0} (~10s)</span>
+              <span className="text-slate-900 font-bold">{story.scenes?.length || 0} (~{SHOT_LENGTH_LABEL})</span>
             </div>
           </div>
         ) : (

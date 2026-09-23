@@ -60,6 +60,20 @@ export class AIProviderManager {
     return [...this.providers.keys()];
   }
 
+  /**
+   * Which registered providers actually hold a key, in registration order.
+   *
+   * For the boot-time report. Exposed as a method rather than letting callers
+   * reach into the provider map, so the registry stays the only thing that
+   * knows how providers are stored.
+   */
+  readiness(): Array<{ id: string; configured: boolean }> {
+    return [...this.providers.values()].map((p) => ({
+      id: p.id,
+      configured: typeof p.isConfigured === "function" ? p.isConfigured() : false,
+    }));
+  }
+
   /** The provider id used when a call does not name one. */
   getDefaultId(): string {
     const configured = process.env.AI_PROVIDER;

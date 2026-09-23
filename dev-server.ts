@@ -1,4 +1,6 @@
 import { createApp } from "./server.js";
+import { applyLongGenerationTimeouts } from "./src/server/http-timeouts.js";
+import { describeProviderSetup } from "./src/server/ai/index.js";
 
 /**
  * Local development server - unchanged behaviour from before the Vercel split.
@@ -20,9 +22,16 @@ async function startDevServer() {
   });
   app.use(vite.middlewares);
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Veggie Story Studio running on http://localhost:${PORT}`);
+    console.log(describeProviderSetup());
   });
+
+  // A sixty-scene film is a single POST that stays open for twenty minutes or
+  // more. Node's defaults are written for ordinary web traffic and would cut
+  // it off mid-generation, which surfaces to the user as "unable to reach the
+  // studio backend" after the work was already paid for.
+  applyLongGenerationTimeouts(server);
 }
 
 startDevServer().catch((err) => {

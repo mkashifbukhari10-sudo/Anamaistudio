@@ -1,5 +1,5 @@
 import { VeggieStory, TimelineValidationReport, ProductionChecklistStatus } from '../types';
-import { calculateSceneCount, formatClock } from '../shared/duration';
+import { calculateSceneCount, formatClock, SECONDS_PER_SCENE } from '../shared/duration';
 
 /**
  * Duration and scene-count math is owned by shared/duration.ts so the server
@@ -17,8 +17,12 @@ export function formatTimeRange(totalSeconds: number): string {
 export function validateTimeline(story: VeggieStory): TimelineValidationReport {
   const expectedSceneCount = getExpectedSceneCount(story.duration);
   const actualSceneCount = story.scenes?.length || 0;
-  const expectedTotalSeconds = expectedSceneCount * 10;
-  const actualTotalSeconds = actualSceneCount * 10;
+  // Derived, not literal. These were `* 10` and survived the move to
+  // a shorter shot length, so the production package reported a film as
+  // "0:00 – 7:30" when its own scene list ended at 6:00 - the package
+  // contradicting itself on the first page.
+  const expectedTotalSeconds = expectedSceneCount * SECONDS_PER_SCENE;
+  const actualTotalSeconds = actualSceneCount * SECONDS_PER_SCENE;
 
   const expectedTimeline = `0:00 – ${formatTimeRange(expectedTotalSeconds)}`;
   const actualTimeline = actualSceneCount > 0 ? `0:00 – ${formatTimeRange(actualTotalSeconds)}` : '0:00 – 0:00';

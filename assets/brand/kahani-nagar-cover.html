@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<!--
+  KAHANI NAGAR - Facebook cover template (851 x 315).
+
+  HOW TO USE
+    1. Open this file in Chrome.
+    2. Drop a transparent PNG of your Sabzi Nagar cast onto the page (or click
+       the slot). It lands inside the safe zone automatically.
+    3. Press G to toggle the crop guides.
+    4. Press S for capture mode, then screenshot the frame - or open DevTools,
+       right-click the .cover node and choose "Capture node screenshot".
+    5. Save as PNG. Facebook softens JPG text, and this cover has a wordmark.
+
+  THE TWO CROPS THIS TEMPLATE EXISTS TO SURVIVE
+    - Mobile shows roughly the central 640 of the 851. The outer thirds are cut.
+    - On desktop the profile picture covers the bottom-left corner, about 96px
+      in and 96px up. Anything placed there is hidden behind the lantern.
+  Both are drawn by the guides. Nothing that matters may sit outside them.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kahani Nagar Cover</title>
+<style>
+  :root {
+    --indigo-deep: #0E1428;
+    --indigo:      #141B33;
+    --amber:       #F5A623;
+    --amber-warm:  #FFC969;
+    --cream:       #FFF6DC;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: #0a0a0c;
+    color: #8b8fa3;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 22px; padding: 40px 16px; min-height: 100vh;
+  }
+
+  /* Exactly the upload size. Do not scale this node. */
+  .cover {
+    position: relative;
+    width: 851px; height: 315px;
+    overflow: hidden; flex: none;
+    background:
+      radial-gradient(120% 150% at 50% 118%, #6B3F1E 0%, #3A2A47 34%, var(--indigo) 66%, var(--indigo-deep) 100%);
+  }
+  .cover::after {
+    content: "";
+    position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(60% 80% at 50% 112%, rgba(245,166,35,0.30), transparent 70%);
+  }
+
+  .roofs { position: absolute; inset: 0; }
+  .roof { position: absolute; bottom: 0; background: var(--indigo-deep); border-radius: 2px 2px 0 0; }
+  .win {
+    position: absolute; width: 5px; height: 7px; border-radius: 1px;
+    background: var(--amber-warm);
+    box-shadow: 0 0 9px 3px rgba(245,166,35,0.55);
+  }
+  .star { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #cdd6f5; }
+
+  .cast {
+    position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
+    height: 200px; max-width: 560px; object-fit: contain; display: none;
+  }
+  .cast.loaded { display: block; }
+  .slot {
+    position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+    width: 520px; height: 148px;
+    border: 1.5px dashed rgba(255,201,105,.45); border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(255,201,105,.75); font-size: 12px; letter-spacing: .04em; cursor: pointer;
+  }
+  .slot.hidden { display: none; }
+
+  .lockup { position: absolute; left: 50%; top: 40px; transform: translateX(-50%); width: 600px; text-align: center; }
+  .wordmark {
+    font-size: 52px; font-weight: 800; letter-spacing: .13em; line-height: 1;
+    color: var(--cream); text-shadow: 0 2px 26px rgba(0,0,0,.65);
+  }
+  .tagline {
+    margin-top: 11px; font-size: 17px; font-style: italic; letter-spacing: .05em;
+    color: var(--amber-warm); text-shadow: 0 1px 12px rgba(0,0,0,.7);
+  }
+  .studio {
+    position: absolute; right: 22px; bottom: 16px;
+    font-size: 10px; letter-spacing: .22em; font-weight: 600; color: rgba(255,246,220,.5);
+  }
+
+  .guides { position: absolute; inset: 0; display: none; pointer-events: none; }
+  .guides.on { display: block; }
+  .crop-l, .crop-r { position: absolute; top: 0; bottom: 0; width: 105.5px; background: rgba(255,0,60,.30); }
+  .crop-l { left: 0;  border-right: 1px solid rgba(255,0,60,.8); }
+  .crop-r { right: 0; border-left:  1px solid rgba(255,0,60,.8); }
+  .pfp {
+    position: absolute; left: 24px; bottom: 6px; width: 132px; height: 132px;
+    border-radius: 50%; background: rgba(255,0,60,.35); border: 1px dashed rgba(255,0,60,.9);
+  }
+  .glabel {
+    position: absolute; font-size: 9px; letter-spacing: .08em; color: #fff;
+    background: rgba(200,0,45,.85); padding: 2px 5px; border-radius: 2px;
+  }
+
+  .hint { font-size: 12.5px; line-height: 1.9; text-align: center; max-width: 640px; }
+  kbd {
+    background: #1c1c22; border: 1px solid #333; border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 6px; font-size: 11px; color: #ddd;
+  }
+  body.capture { padding-top: 0; }
+  body.capture .hint { display: none; }
+</style>
+</head>
+<body>
+
+<div class="cover" id="cover">
+  <div class="roofs" id="roofs"></div>
+
+  <img class="cast" id="cast" alt="">
+  <div class="slot" id="slot">drop your cast PNG here &nbsp;&middot;&nbsp; transparent background</div>
+
+  <div class="lockup">
+    <div class="wordmark">KAHANI NAGAR</div>
+    <div class="tagline">Chhoti kahani, bara sabaq</div>
+  </div>
+
+  <div class="studio">ANAMSTUDIO</div>
+
+  <div class="guides" id="guides">
+    <div class="crop-l"></div>
+    <div class="crop-r"></div>
+    <div class="pfp"></div>
+    <div class="glabel" style="left:6px;  top:6px;">CUT ON MOBILE</div>
+    <div class="glabel" style="right:6px; top:6px;">CUT ON MOBILE</div>
+    <div class="glabel" style="left:24px; bottom:142px;">PROFILE PICTURE SITS HERE</div>
+  </div>
+</div>
+
+<p class="hint">
+  <kbd>G</kbd> guides &nbsp;&middot;&nbsp; <kbd>S</kbd> capture mode &nbsp;&middot;&nbsp; drop a transparent cast PNG anywhere<br>
+  Export at <strong>851 &times; 315</strong> as <strong>PNG</strong> &mdash; JPG will soften the wordmark.
+</p>
+
+<script>
+  // The town is generated rather than hand-placed, so the rooftops and lit
+  // windows can be reshuffled until a composition sits well behind the text.
+  // Reload the page for a new arrangement.
+  var roofs = document.getElementById("roofs");
+  var spans = [
+    [0, 92, 52], [78, 74, 74], [140, 96, 60], [214, 70, 88], [276, 104, 66],
+    [498, 88, 70], [572, 78, 92], [640, 100, 58], [726, 72, 80], [790, 96, 64]
+  ];
+  spans.forEach(function (s) {
+    var left = s[0], w = s[1], h = s[2];
+    var r = document.createElement("div");
+    r.className = "roof";
+    r.style.left = left + "px"; r.style.width = w + "px"; r.style.height = h + "px";
+    roofs.appendChild(r);
+    // One or two lit windows per building. Lamp-light is the whole brand.
+    var lit = 1 + Math.round(Math.random());
+    for (var i = 0; i < lit; i++) {
+      var win = document.createElement("div");
+      win.className = "win";
+      win.style.left = (left + 14 + Math.random() * (w - 32)) + "px";
+      win.style.bottom = (12 + Math.random() * (h - 30)) + "px";
+      roofs.appendChild(win);
+    }
+  });
+  for (var j = 0; j < 34; j++) {
+    var st = document.createElement("div");
+    st.className = "star";
+    st.style.left = (Math.random() * 851) + "px";
+    st.style.top = (Math.random() * 150) + "px";
+    st.style.opacity = (0.2 + Math.random() * 0.5).toFixed(2);
+    roofs.appendChild(st);
+  }
+
+  var guides = document.getElementById("guides");
+  var slot = document.getElementById("slot");
+  var cast = document.getElementById("cast");
+
+  addEventListener("keydown", function (e) {
+    var k = e.key.toLowerCase();
+    if (k === "g") guides.classList.toggle("on");
+    if (k === "s") { document.body.classList.toggle("capture"); guides.classList.remove("on"); }
+  });
+
+  function load(file) {
+    if (!file || file.type.indexOf("image/") !== 0) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      cast.src = reader.result;
+      cast.classList.add("loaded");
+      slot.classList.add("hidden");
+    };
+    reader.readAsDataURL(file);
+  }
+
+  addEventListener("dragover", function (e) { e.preventDefault(); });
+  addEventListener("drop", function (e) { e.preventDefault(); load(e.dataTransfer.files[0]); });
+
+  slot.addEventListener("click", function () {
+    var input = document.createElement("input");
+    input.type = "file"; input.accept = "image/*";
+    input.onchange = function () { load(input.files[0]); };
+    input.click();
+  });
+
+  guides.classList.add("on");
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import path from "path";
 import express from "express";
 import { createApp } from "./server.js";
+import { applyLongGenerationTimeouts } from "./src/server/http-timeouts.js";
 
 /**
  * Self-hosted production server (`npm start`).
@@ -23,6 +24,10 @@ app.get("*", (_req, res) => {
   res.sendFile(path.join(DIST_PATH, "index.html"));
 });
 
-app.listen(PORT, "0.0.0.0", () => {
+const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`Veggie Story Studio running on http://localhost:${PORT}`);
 });
+
+// Long-form generation holds one request open far longer than Node's defaults
+// allow. See the helper for why each value is set.
+applyLongGenerationTimeouts(server);

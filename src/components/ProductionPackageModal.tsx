@@ -1,3 +1,4 @@
+import { SHOT_LENGTH_LABEL, SHOT_LENGTH_PHRASE } from '../shared/duration';
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -47,7 +48,7 @@ export const ProductionPackageModal: React.FC<ProductionPackageModalProps> = ({
     if (story.storyMode) md += `**Story Mode:** ${story.storyMode}\n`;
     md += `**Target Duration:** ${story.duration}\n`;
     md += `**Visual Animation Style:** ${story.animationStyle || 'Cute 3D'}\n`;
-    md += `**Total Production Scenes:** ${scenes.length} (~10s per shot)\n`;
+    md += `**Total Production Scenes:** ${scenes.length} (~${SHOT_LENGTH_LABEL} per shot)\n`;
     if (story.isLongForm) md += `**Format:** 🎬 Long-Form Cinematic Tale\n`;
     md += `**Moral:** ${story.moral}\n\n`;
     md += `---\n\n`;
@@ -111,8 +112,8 @@ export const ProductionPackageModal: React.FC<ProductionPackageModalProps> = ({
     });
     md += `---\n\n`;
 
-    // 4. 10-SECOND SCENE BREAKDOWN & TIMELINE
-    md += `## ⏱️ 4. 10-SECOND SCENE TIMELINE & PRODUCTION BREAKDOWN\n\n`;
+    // 4. SCENE BREAKDOWN & TIMELINE
+    md += `## ⏱️ 4. ${SHOT_LENGTH_PHRASE.toUpperCase()} SCENE TIMELINE & PRODUCTION BREAKDOWN\n\n`;
     scenes.forEach((scene) => {
       md += `### Scene #${scene.sceneNumber} (${scene.timeRange} | ${scene.duration})\n`;
       md += `- **Purpose:** ${scene.purpose}\n`;
@@ -149,9 +150,14 @@ export const ProductionPackageModal: React.FC<ProductionPackageModalProps> = ({
       md += `- **Character Consistency Verification:** ${scene.characterConsistencyNotes}\n`;
       md += `- **Visual Summary:** ${scene.visualDescription}\n\n`;
       if (scene.frameHandoff) {
-        const chain = scene.frameHandoff.type === 'CHAIN';
-        md += `#### ${chain ? '🔗' : '✂️'} Step 1 — Frame Handoff (${scene.frameHandoff.type})\n`;
+        const mode = scene.frameHandoff.mode || scene.frameHandoff.type;
+        const icon = mode === 'CHAIN' ? '🔗' : mode === 'IDENTITY' ? '🖼️' : '✂️';
+        md += `#### ${icon} Step 1 — Frame Handoff (${mode})\n`;
         md += `${scene.frameHandoff.instruction}\n\n`;
+      }
+      if (scene.referenceAssets?.length) {
+        md += `#### 🧩 Step 1b — Attach character references (Flow Ingredients)\n`;
+        md += `This clip needs: ${scene.referenceAssets.map((a: any) => a.characterName).join(', ')}.\n\n`;
       }
       md += `#### 🎥 Step 2 — Positive Prompt → paste into the Flow / Veo prompt box (Scene #${scene.sceneNumber})\n`;
       md += `\`\`\`text\n${scene.finalVideoPrompt}\n\`\`\`\n\n`;
@@ -159,6 +165,9 @@ export const ProductionPackageModal: React.FC<ProductionPackageModalProps> = ({
         md += `#### 🚫 Step 3 — Negative Prompt → paste into Flow / Veo's NEGATIVE field, never the prompt box\n`;
         md += `\`\`\`text\n${scene.negativePrompt}\n\`\`\`\n\n`;
       }
+      md += `#### 🏷️ Step 4 — Brand mark (after the clip is downloaded)\n`;
+      md += `Do NOT ask Flow for the logo — the negative prompt suppresses text and the model cannot hold two letters steady across separate generations. Stamp it once all clips are downloaded:\n\n`;
+      md += `\`\`\`bash\nnode scripts/brand-clips.mjs <folder-of-clips>\n\`\`\`\n\n`;
     });
 
     return md;
@@ -270,7 +279,7 @@ export const ProductionPackageModal: React.FC<ProductionPackageModalProps> = ({
                   📦 Complete Animation Production Package
                 </h3>
                 <p className="text-xs text-slate-700 font-medium">
-                  Full Story Script, Character Bible, Reference Prompts, and 10-Second Scene Breakdown
+                  Full Story Script, Character Bible, Reference Prompts, and {SHOT_LENGTH_PHRASE} Scene Breakdown
                 </p>
               </div>
             </div>
