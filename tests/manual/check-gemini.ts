@@ -94,7 +94,7 @@ console.log("\n4. MODEL NAMES THIS KEY CAN SEE (flash family)");
 for (const m of usable.filter((n) => /flash/i.test(n)).slice(0, 14)) console.log(`   ${m}`);
 
 console.log("\n5. ADAPTER FALLBACK CHAIN vs REALITY");
-const { GeminiProvider } = await import("../src/server/ai/gemini-provider.js");
+const { GeminiProvider } = await import("../../src/server/ai/gemini-provider.js");
 const configured = new GeminiProvider().textModels;
 let stale = 0;
 for (const m of configured) {

@@ -8,8 +8,8 @@
  *
  * Offline. Run: npx tsx tests/calibrate-world-text.ts
  */
-import { textSimilarity } from "../src/server/story/scene-distinctiveness.js";
-import { numbersConflict } from "../src/server/story/frame-handoff.js";
+import { textSimilarity } from "../../src/server/story/scene-distinctiveness.js";
+import { numbersConflict } from "../../src/server/story/frame-handoff.js";
 
 /** The same sign, reworded the way separate batches reword it. */
 const SAME: Array<[string, string]> = [

@@ -13,14 +13,14 @@
  * Run: npx tsx tests/validate-seam.ts
  */
 import { readdirSync } from "node:fs";
-import { parseReport } from "./parse-report.js";
-import { makeSelfContained, ensureDialogueInPrompt } from "../src/server/story/prompt-continuity.js";
+import { parseReport } from "../helpers/parse-report.js";
+import { makeSelfContained, ensureDialogueInPrompt } from "../../src/server/story/prompt-continuity.js";
 import {
   applyFrameBookends,
   buildSceneFrames,
   OPENING_LEAD,
   CLOSING_LEAD,
-} from "../src/server/story/seam.js";
+} from "../../src/server/story/seam.js";
 
 const DIR = "test-output";
 const reports = readdirSync(DIR).filter((f) => f.endsWith(".md"));

@@ -12,7 +12,7 @@ import type {
 /**
  * Google Gemini adapter.
  *
- * This file owns every Gemini-specific concern that used to sit in server.ts:
+ * This file owns every Gemini-specific concern that used to sit in the app module:
  * client construction, the model fallback chains, the per-attempt timeouts,
  * the quota/busy error classification, the retry spacing, and the inlineData
  * extraction for images. The behaviour is carried over verbatim - same model

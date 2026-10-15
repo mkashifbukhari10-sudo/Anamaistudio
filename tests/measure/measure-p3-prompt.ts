@@ -1,10 +1,10 @@
-import { buildSceneCraftRules } from "../src/server/story/story-craft.js";
+import { buildSceneCraftRules } from "../../src/server/story/story-craft.js";
 import {
   buildStoryIntelligenceDirectives,
   buildBlueprintPromptBlock,
   sliceBlueprintForRange,
   buildStoryMemory,
-} from "../src/server/story/blueprint.js";
+} from "../../src/server/story/blueprint.js";
 
 /**
  * P3 prompt-size measurement.

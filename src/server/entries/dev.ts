@@ -1,6 +1,6 @@
-import { createApp } from "./server.js";
-import { applyLongGenerationTimeouts } from "./src/server/http-timeouts.js";
-import { describeProviderSetup } from "./src/server/ai/index.js";
+import { createApp } from "../app.js";
+import { applyLongGenerationTimeouts } from "../http-timeouts.js";
+import { describeProviderSetup } from "../ai/index.js";
 
 /**
  * Local development server - unchanged behaviour from before the Vercel split.

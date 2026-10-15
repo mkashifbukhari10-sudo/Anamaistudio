@@ -7,9 +7,9 @@
  * Run: npx tsx tests/calibrate-beat-clock.ts
  */
 import { readdirSync } from "node:fs";
-import { parseReport } from "./parse-report.js";
-import { buildBeatClock, renderBeatClock } from "../src/server/story/beat-clock.js";
-import { measureScene } from "../src/server/story/performance-budget.js";
+import { parseReport } from "../helpers/parse-report.js";
+import { buildBeatClock, renderBeatClock } from "../../src/server/story/beat-clock.js";
+import { measureScene } from "../../src/server/story/performance-budget.js";
 
 const DIR = "test-output";
 const LANG = "Roman Urdu";

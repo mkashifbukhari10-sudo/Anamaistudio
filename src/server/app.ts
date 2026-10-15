@@ -1,16 +1,16 @@
 import express from "express";
-import { Type } from "./src/server/ai/schema.js";
+import { Type } from "./ai/schema.js";
 import dotenv from "dotenv";
 import {
   calculateSceneCount as calculateTargetSceneCount,
   formatSceneTimeRange as formatTimeRange,
   formatTotalDuration,
   SECONDS_PER_SCENE,
-} from "./src/shared/duration.js";
-import { generateText, generateImage, MAX_SCENES_PER_BATCH } from "./src/server/ai/index.js";
-import { registerAuthRoutes, requireAuth } from "./src/server/auth/index.js";
-import { buildSceneCraftRules } from "./src/server/story/story-craft.js";
-import { buildFeasibilityReport, wordEnvelope } from "./src/server/story/performance-budget.js";
+} from "../shared/duration.js";
+import { generateText, generateImage, MAX_SCENES_PER_BATCH } from "./ai/index.js";
+import { registerAuthRoutes, requireAuth } from "./auth/index.js";
+import { buildSceneCraftRules } from "./story/story-craft.js";
+import { buildFeasibilityReport, wordEnvelope } from "./story/performance-budget.js";
 
 /**
  * The speakability envelope at the default speaking rate.
@@ -22,15 +22,15 @@ import { buildFeasibilityReport, wordEnvelope } from "./src/server/story/perform
  * the shot length changed.
  */
 const DEFAULT_WORD_ENVELOPE = wordEnvelope(undefined);
-import { buildBeatDensityReport, summariseBeatDensity } from "./src/server/story/beat-density.js";
-import { buildSceneContractReport, summariseContracts } from "./src/server/story/scene-contract.js";
-import { buildActionDensityReport } from "./src/server/story/action-density.js";
-import { buildQualityGateReport, summariseQualityGate } from "./src/server/story/quality-gate.js";
+import { buildBeatDensityReport, summariseBeatDensity } from "./story/beat-density.js";
+import { buildSceneContractReport, summariseContracts } from "./story/scene-contract.js";
+import { buildActionDensityReport } from "./story/action-density.js";
+import { buildQualityGateReport, summariseQualityGate } from "./story/quality-gate.js";
 import {
   buildLifeJourney,
   buildLifeJourneyReport,
   summariseLifeJourney,
-} from "./src/server/story/life-journey.js";
+} from "./story/life-journey.js";
 import {
   buildSocialContextForBible,
   buildSocialGraph,
@@ -38,19 +38,19 @@ import {
   normalizeSocialDeltas,
   reconcilePlannedChanges,
   summariseSocialGraph,
-} from "./src/server/story/social-graph.js";
+} from "./story/social-graph.js";
 import {
   buildWorldRegistry,
   completeEntityFacts,
   resolveScenePlace,
   scrubPlaceIds,
   summariseWorldRegistry,
-} from "./src/server/story/world-registry.js";
-import { validateStoryFacts } from "./src/server/story/fact-validator.js";
-import { startCapture, endCapture, setCallContext, attributionFrom } from "./src/server/ai/telemetry.js";
-import { startProgress, setPhase, setSceneProgress, getProgress, finishProgress } from "./src/server/progress.js";
-import { saveStoryReport } from "./src/server/dev/story-report.js";
-import type { LifeJourney, StoryScope, WorldRegistry } from "./src/types.js";
+} from "./story/world-registry.js";
+import { validateStoryFacts } from "./story/fact-validator.js";
+import { startCapture, endCapture, setCallContext, attributionFrom } from "./ai/telemetry.js";
+import { startProgress, setPhase, setSceneProgress, getProgress, finishProgress } from "./progress.js";
+import { saveStoryReport } from "./dev/story-report.js";
+import type { LifeJourney, StoryScope, WorldRegistry } from "../types.js";
 import {
   buildLedger,
   buildLedgerBlock,
@@ -61,7 +61,7 @@ import {
   reconcileHandoffs,
   summariseContinuity,
   validateContinuity,
-} from "./src/server/story/continuity-director.js";
+} from "./story/continuity-director.js";
 import {
   VIDEO_NEGATIVE_PROMPT,
   makeSelfContained,
@@ -69,25 +69,25 @@ import {
   stripSpeakerLabelsInQuotes,
   normalizeTransitionType,
 
-} from "./src/server/story/prompt-continuity.js";
+} from "./story/prompt-continuity.js";
 import {
   applyFrameBookends,
   buildStyleLock,
   buildSceneFrames,
-} from "./src/server/story/seam.js";
-import { buildBeatClock, renderBeatClock } from "./src/server/story/beat-clock.js";
-import { renderBystanders, idleBystanders } from "./src/server/story/bystanders.js";
+} from "./story/seam.js";
+import { buildBeatClock, renderBeatClock } from "./story/beat-clock.js";
+import { renderBystanders, idleBystanders } from "./story/bystanders.js";
 import {
   openThreadOf,
   flattenStateMap,
   buildThreadBlock,
-} from "./src/server/story/seam-thread.js";
+} from "./story/seam-thread.js";
 import {
   buildFrameHandoff,
   buildReferenceAssets,
   reconcileWorldText,
   worldTextOf,
-} from "./src/server/story/frame-handoff.js";
+} from "./story/frame-handoff.js";
 import {
   BLUEPRINT_SCHEMA,
   buildBlueprintSchema,
@@ -101,7 +101,7 @@ import {
   targetBeatCount,
   targetCastSize,
   normalizeCharacterCount,
-} from "./src/server/story/blueprint.js";
+} from "./story/blueprint.js";
 
 dotenv.config();
 
@@ -1188,7 +1188,7 @@ function validateAndStandardizeTimeline(
  *
  * Pure factory: no port listener, no static file serving, no Vite. The same
  * app is therefore usable as a Vercel Function handler (api/index.ts), or
- * wrapped by dev-server.ts locally, or by prod-server.ts when self-hosting.
+ * wrapped by entries/dev.ts locally, or by entries/prod.ts when self-hosting.
  */
 export interface CreateAppOptions {
   /**

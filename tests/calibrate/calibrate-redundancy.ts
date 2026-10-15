@@ -32,7 +32,7 @@
  *
  * Offline. Run: npx tsx tests/calibrate-redundancy.ts
  */
-import { textSimilarity } from "../src/server/story/scene-distinctiveness.js";
+import { textSimilarity } from "../../src/server/story/scene-distinctiveness.js";
 
 interface Fixture {
   action: string;

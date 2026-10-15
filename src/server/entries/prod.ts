@@ -1,7 +1,7 @@
 import path from "path";
 import express from "express";
-import { createApp } from "./server.js";
-import { applyLongGenerationTimeouts } from "./src/server/http-timeouts.js";
+import { createApp } from "../app.js";
+import { applyLongGenerationTimeouts } from "../http-timeouts.js";
 
 /**
  * Self-hosted production server (`npm start`).

@@ -1,13 +1,13 @@
 import fs from "fs";
 import path from "path";
-import { ALL_FIXTURES, BAD_FIXTURES, NEGATIVE_FIXTURES } from "./fixtures/story-fixtures.js";
-import { parseReport } from "./parse-report.js";
+import { ALL_FIXTURES, BAD_FIXTURES, NEGATIVE_FIXTURES } from "../fixtures/story-fixtures.js";
+import { parseReport } from "../helpers/parse-report.js";
 import {
   buildSignature,
   scorePair,
   buildDistinctivenessReport,
   NEAR_WINDOW,
-} from "../src/server/story/scene-distinctiveness.js";
+} from "../../src/server/story/scene-distinctiveness.js";
 
 /**
  * Threshold calibration harness.

@@ -25,7 +25,7 @@ import type { SocialGraph, SocialStateEntry, StoryScope, WorldRegistry } from ".
  * that evolve, a causal beat sheet, and planted setups with payoffs.
  *
  * Everything here is CONSUMED by the generation pipeline:
- *   - the blueprint is generated in its own phase (server.ts, Phase 1A)
+ *   - the blueprint is generated in its own phase (app.ts, Phase 1A)
  *   - the Character Bible + screenplay phase is written against it (Phase 1B)
  *   - every scene batch receives a scoped slice plus long-term story memory
  *   - the finished timeline is measured against it (quality report)

@@ -2,9 +2,9 @@ import {
   ALL_CONTRACT_FIXTURES,
   BAD_CONTRACT_FIXTURES,
   LEGITIMATE_CONTRACT_FIXTURES,
-} from "./fixtures/contract-fixtures.js";
-import { buildSceneContractReport, BEFORE_AFTER_THRESHOLD, ACTIVITY_THRESHOLD } from "../src/server/story/scene-contract.js";
-import { textSimilarity } from "../src/server/story/scene-distinctiveness.js";
+} from "../fixtures/contract-fixtures.js";
+import { buildSceneContractReport, BEFORE_AFTER_THRESHOLD, ACTIVITY_THRESHOLD } from "../../src/server/story/scene-contract.js";
+import { textSimilarity } from "../../src/server/story/scene-distinctiveness.js";
 
 /**
  * Scene-contract threshold calibration.

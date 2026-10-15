@@ -6,9 +6,9 @@ import {
   ROMAN_URDU_OVERLOADED,
   ROMAN_URDU_RENDERABLE,
   UNREADABLE_ACTIONS,
-} from "./fixtures/action-fixtures.js";
-import { measureActionDensity, BEAT_LIMITS, DEFAULT_BEAT_LIMIT, RELOCATION_LIMIT } from "../src/server/story/action-density.js";
-import { parseReport } from "./parse-report.js";
+} from "../fixtures/action-fixtures.js";
+import { measureActionDensity, BEAT_LIMITS, DEFAULT_BEAT_LIMIT, RELOCATION_LIMIT } from "../../src/server/story/action-density.js";
+import { parseReport } from "../helpers/parse-report.js";
 import fs from "fs";
 import path from "path";
 

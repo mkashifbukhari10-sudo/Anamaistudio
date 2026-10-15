@@ -20,7 +20,7 @@
  */
 import fs from "fs";
 import path from "path";
-import { textSimilarity } from "../src/server/story/scene-distinctiveness.js";
+import { textSimilarity } from "../../src/server/story/scene-distinctiveness.js";
 
 const DIR = "test-output";
 
@@ -126,6 +126,6 @@ examples
  * fields and never tells the model the fields must not overlap.
  *
  * The fix therefore went upstream, into what 'accompanyingAction' is asked for
- * (server.ts, section 5) - not into a detector here. This file stays as the
+ * (app.ts, section 5) - not into a detector here. This file stays as the
  * record of why.
  * ------------------------------------------------------------------------- */

@@ -2,7 +2,7 @@
  * Single source of truth for duration presets, scene-count calculation and
  * timeline formatting.
  *
- * Imported by BOTH the Express server (server.ts) and the React client
+ * Imported by BOTH the Express server (src/server/app.ts) and the React client
  * (utils/validation.ts, components/DurationSelector.tsx). Keep it free of any
  * React, Node or provider imports so it stays portable across both bundles.
  *

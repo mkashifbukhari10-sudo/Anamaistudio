@@ -110,7 +110,7 @@ console.log("\nthe guardrail: a hook at every join is not the goal");
 // The schema and section 6 are the contract with the model, so the wording that
 // keeps act breaks from becoming cliffhangers is asserted against the source
 // rather than assumed.
-const serverSource = readFileSync(new URL("../server.ts", import.meta.url), "utf8");
+const serverSource = readFileSync(new URL("../src/server/app.ts", import.meta.url), "utf8");
 ok(
   "the schema says 'None' is correct at an act break or time jump",
   /Write 'None' when the scene closes its beat cleanly[\s\S]{0,200}act break, a time jump/.test(serverSource)

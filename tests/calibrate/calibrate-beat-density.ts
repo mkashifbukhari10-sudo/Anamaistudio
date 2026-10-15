@@ -2,9 +2,9 @@ import {
   ALL_BEAT_FIXTURES,
   BAD_BEAT_FIXTURES,
   NEGATIVE_BEAT_FIXTURES,
-} from "./fixtures/beat-fixtures.js";
-import { buildBeatDensityReport, clusterMoves, MOVE_SIMILARITY_THRESHOLD } from "../src/server/story/beat-density.js";
-import { textSimilarity } from "../src/server/story/scene-distinctiveness.js";
+} from "../fixtures/beat-fixtures.js";
+import { buildBeatDensityReport, clusterMoves, MOVE_SIMILARITY_THRESHOLD } from "../../src/server/story/beat-density.js";
+import { textSimilarity } from "../../src/server/story/scene-distinctiveness.js";
 
 /**
  * Beat-density threshold calibration.

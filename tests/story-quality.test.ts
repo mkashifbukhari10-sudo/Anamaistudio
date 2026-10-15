@@ -22,7 +22,7 @@ import {
   wordEnvelope,
 } from "../src/server/story/performance-budget.js";
 import { BAD_FIXTURES, NEGATIVE_FIXTURES, ALL_FIXTURES } from "./fixtures/story-fixtures.js";
-import { parseReport } from "./parse-report.js";
+import { parseReport } from "./helpers/parse-report.js";
 
 /**
  * P0 regression suite — Scene Distinctiveness + Performance Budget.

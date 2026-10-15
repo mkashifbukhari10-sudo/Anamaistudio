@@ -1,4 +1,4 @@
-import { SCENE_SCHEMA_FOR_MEASUREMENT } from "./schema-probe.js";
+import { SCENE_SCHEMA_FOR_MEASUREMENT } from "../helpers/schema-probe.js";
 
 /**
  * Schema / payload overhead introduced by SceneContract.
