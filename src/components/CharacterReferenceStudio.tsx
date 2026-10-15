@@ -21,6 +21,7 @@ import {
   Package,
 } from 'lucide-react';
 import { CharacterBibleEntry, CharacterReferencePackage } from '../types';
+import { findPack } from '../shared/packs';
 
 interface CharacterReferenceStudioProps {
   characters: CharacterBibleEntry[];
@@ -33,6 +34,8 @@ interface CharacterReferenceStudioProps {
   isRegeneratingAll?: boolean;
   regeneratingCharacterId?: string | null;
   generatingImageCharacterId?: string | null;
+  /** The story's film world, for the fallback prompt builder below. */
+  pack?: string;
 }
 
 export const CharacterReferenceStudio: React.FC<CharacterReferenceStudioProps> = ({
@@ -46,7 +49,9 @@ export const CharacterReferenceStudio: React.FC<CharacterReferenceStudioProps> =
   isRegeneratingAll = false,
   regeneratingCharacterId = null,
   generatingImageCharacterId = null,
+  pack,
 }) => {
+  const packInfo = findPack(pack);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
@@ -80,18 +85,29 @@ export const CharacterReferenceStudio: React.FC<CharacterReferenceStudioProps> =
     );
     if (existing) return existing;
 
-    // Fallback deterministic builder if reference package hasn't arrived
-    const style = animationStyle || 'Cute 3D';
+    // NO LOCAL REBUILD. This used to hold a verbatim copy of the server's six
+    // reference prompts, which is how it ended up as the only copy that never
+    // learned about story packs: it emitted "Botanical anatomy" and "realistic
+    // produce photographs" for every character, including a hen. Two copies of
+    // the same prompt templates drift, and the drifted one shipped to the image
+    // model.
+    //
+    // The server builds these in Phase 5 and on the regenerate endpoints, so
+    // this path is only the brief window before they arrive. Saying so is more
+    // useful than handing the operator a prompt for the wrong kind of animal.
+    const pending = `Reference prompts for ${char.name} have not been generated yet. Use "Regenerate" above to build this character's ${packInfo.label} reference package.`;
+
     return {
       characterId: char.id,
       characterName: char.name,
+      characterType: char.characterType ?? char.veggieType,
       veggieType: char.veggieType,
-      fullBodyPrompt: `Full-body character reference of ${char.name}, a cute anthropomorphic ${char.veggieType} in ${style} animation style. Clean neutral light gray studio background, soft cinematic studio key lighting, centered turnaround view from head to feet. Body proportions: ${char.bodyShape}. Facial features: ${char.faceDesign}, eyes: ${char.eyeStyleAndColor}, mouth: ${char.mouthStyle}. Botanical anatomy: ${char.veggieFeatures}. Wardrobe: ${char.clothing}, shoes: ${char.shoes}, accessories: ${char.accessories}. Color palette: ${char.mainColors}. Standing in a relaxed neutral A-pose with clear silhouette and crisp edge definition. Masterpiece 3D children's animation character asset, high resolution, no background elements or story environment.`,
-      frontFacingPrompt: `Front-facing character reference portrait of ${char.name}, anthropomorphic ${char.veggieType}, ${style} children's animation feature film quality. Direct frontal close-up angle centered on face and upper torso against a clean neutral off-white background. Showing detailed face design: ${char.faceDesign}, expressive eyes: ${char.eyeStyleAndColor}, mouth: ${char.mouthStyle}, green vegetable crown/stem: ${char.veggieFeatures}, collar and upper clothing: ${char.clothing}, accessories: ${char.accessories}. Symmetrical camera composition, soft even rim lighting, sharp texture detail, character model reference standard.`,
-      characterSheetPrompt: `Professional 3D animation character model sheet of ${char.name} the anthropomorphic ${char.veggieType}. Multiple views of the EXACT SAME character on a single clean neutral background: Front view, 3/4 front view, Side profile view, and Back view. Maintaining 100% identical body proportions (${char.bodyShape}), face (${char.faceDesign}, ${char.eyeStyleAndColor}), vegetable anatomy (${char.veggieFeatures}), clothing (${char.clothing}), shoes (${char.shoes}), and palette (${char.mainColors}) across all 4 turnaround angles. Studio model sheet for Google Flow / Veo animation reference, uniform lighting, high consistency.`,
-      expressionSheetPrompt: `Animation character expression sheet for ${char.name} (${char.veggieType}), ${style} style. A grid showcasing 6 distinct emotional expressions of the SAME identical character: (1) Happy beaming smile, (2) Sad downturned pout with teary eyes, (3) Wide-eyed surprised gasp with raised eyebrows, (4) Excited cheering with starry eyes, (5) Worried / cautious look with tilted head, (6) Big laughing chuckle. Core visual identity is 100% locked: identical ${char.bodyShape}, ${char.veggieFeatures}, ${char.eyeStyleAndColor}, ${char.clothing}, and ${char.mainColors}. Only facial muscles and mouth/brow shapes alter dynamically.`,
-      flowVeoInstructions: `CRITICAL FLOW / VEO VISUAL CONSISTENCY INSTRUCTIONS FOR ${char.name.toUpperCase()} (${char.veggieType.toUpperCase()}):\n1. ANATOMY & PROPORTIONS: Must strictly maintain ${char.bodyShape}. Do NOT alter torso height, limb proportions, or vegetable shape.\n2. BOTANICAL FEATURES: Fixed stem/leaf crown (${char.veggieFeatures}). Do NOT remove or modify leaf counts or sprout styles.\n3. FACIAL IDENTITY: ${char.faceDesign} with ${char.eyeStyleAndColor} and ${char.mouthStyle}. Eye color and catchlights must remain identical in every frame.\n4. LOCKED WARDROBE: Outfit must always be ${char.clothing}, footwear must always be ${char.shoes}, accessories: ${char.accessories}. Never switch clothing styles or colors.\n5. COLOR PALETTE: Strictly adhere to ${char.mainColors}.\n6. ANIMATION FLAVOR: ${style} Pixar/Illumination feel with squash-and-stretch physics.\n7. USAGE RULE: Treat this reference package as the authoritative visual Ingredient in Google Flow / Veo video generation. All scene generations must align with this locked asset.`,
-      negativePrompt: `Avoid in all generations of ${char.name}: photorealistic human skin, realistic produce photographs, changed clothing, alternate colors, wrong eye color, different body shape, adult proportions, extra limbs, missing leaves, missing shoes, random accessories, realistic textures, dark gritty horror lighting, blurry artifacts, text, watermarks, logo overlays, deformed face, character redesign.`,
+      fullBodyPrompt: pending,
+      frontFacingPrompt: pending,
+      characterSheetPrompt: pending,
+      expressionSheetPrompt: pending,
+      flowVeoInstructions: pending,
+      negativePrompt: pending,
     };
   };
 

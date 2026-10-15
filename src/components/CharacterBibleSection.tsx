@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { CharacterBibleEntry } from '../types';
+import { findPack } from '../shared/packs';
 import {
   Lock,
   Unlock,
@@ -27,6 +28,8 @@ interface CharacterBibleSectionProps {
   onRegenerateCharacters: () => Promise<void>;
   isRegeneratingCharacters: boolean;
   onPlayPop?: () => void;
+  /** The story's film world, so the anatomy field is named correctly. */
+  pack?: string;
 }
 
 export const CharacterBibleSection: React.FC<CharacterBibleSectionProps> = ({
@@ -37,7 +40,11 @@ export const CharacterBibleSection: React.FC<CharacterBibleSectionProps> = ({
   onRegenerateCharacters,
   isRegeneratingCharacters,
   onPlayPop,
+  pack,
 }) => {
+  // "Veggie Features" is wrong on a hen, and this label is copied into the
+  // text an operator pastes elsewhere, not just shown on screen.
+  const packInfo = findPack(pack);
   const [expandedCharId, setExpandedCharId] = useState<string | null>(null);
   const [copiedCharId, setCopiedCharId] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
@@ -69,7 +76,7 @@ Body Shape: ${c.bodyShape}
 Face: ${c.faceDesign}
 Eyes: ${c.eyeStyleAndColor}
 Mouth: ${c.mouthStyle}
-Veggie Features: ${c.veggieFeatures}
+${packInfo.anatomyFieldLabel}: ${c.characterFeatures ?? c.veggieFeatures}
 Clothing: ${c.clothing}
 Shoes: ${c.shoes}
 Accessories: ${c.accessories}
@@ -160,7 +167,7 @@ Catchphrase: ${c.catchphrase || 'N/A'}`
               onRegenerateCharacters();
             }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-white hover:bg-slate-50 disabled:opacity-50 text-slate-700 text-xs font-bold transition-colors cursor-pointer border border-slate-300 shadow-2xs whitespace-nowrap"
-            title="Generate fresh vegetable designs for this story topic"
+            title="Generate fresh character designs for this story topic"
           >
             <RefreshCw
               className={`w-3.5 h-3.5 text-slate-700 ${
@@ -384,8 +391,8 @@ Catchphrase: ${c.catchphrase || 'N/A'}`
                             <p className="text-slate-800 break-words font-medium">{char.mouthStyle}</p>
                           </div>
                           <div className="sm:col-span-2">
-                            <span className="font-semibold text-slate-900">Veggie Features:</span>
-                            <p className="text-slate-800 break-words font-medium">{char.veggieFeatures}</p>
+                            <span className="font-semibold text-slate-900">{packInfo.anatomyFieldLabel}:</span>
+                            <p className="text-slate-800 break-words font-medium">{char.characterFeatures ?? char.veggieFeatures}</p>
                           </div>
                         </div>
                       </div>

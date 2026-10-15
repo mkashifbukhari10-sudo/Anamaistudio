@@ -63,7 +63,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onAuthenticated }) => 
             <Clapperboard className="w-8 h-8" />
           </div>
           <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-            Veggie Story Studio
+            AnamStudio
           </h1>
           <p className="text-sm text-slate-600 mt-1.5">Sign in to continue to the studio.</p>
         </div>

@@ -113,6 +113,54 @@ function escapeForRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * True when the prompt uses a registry name AS A NAME, not as a description.
+ *
+ * The distinction is the whole finding. A registry name the video model cannot
+ * picture - "Dhobi Chabootra", "Pital Ka Ghanta" - is a real fault worth
+ * reporting. But a blueprint is free to register its places with plain English
+ * descriptive names, and a wordless farmyard film did exactly that: "The
+ * Sunlit Mud Courtyard", "Terracotta Grain Dish", "Dried Seed Gourd". Its
+ * prompts then wrote "a terracotta grain dish" and "a dried seed gourd hanging
+ * by jute twine" - correct, picturable prose - and a case-insensitive match
+ * flagged all six of them. Every warning in that film was a false positive.
+ *
+ * So the test is how the words APPEAR, not whether they appear:
+ *
+ *   "on Dhobi Chabootra"          -> capitalised, a name      -> flagged
+ *   "a terracotta grain dish"     -> lowercase, a description -> ignored
+ *
+ * A leading article on the registry name is stripped before matching, so
+ * "The Sunlit Mud Courtyard" is still recognised in "into the sunlit mud
+ * courtyard". A single capitalised word at the start of a sentence proves
+ * nothing and is not enough on its own.
+ */
+function usedAsProperName(prompt: string, name: string): boolean {
+  const core = name.replace(/^(?:the|a|an)\s+/i, "").trim();
+  if (core.length < 4) return false;
+
+  const re = new RegExp(`(^|[^\\p{L}])(${escapeForRegex(core)})([^\\p{L}]|$)`, "giu");
+  let match: RegExpExecArray | null;
+
+  while ((match = re.exec(prompt)) !== null) {
+    const matched = match[2];
+    // Short connectives inside a name ("ka", "ki", "aur", "of") are not
+    // expected to be capitalised and must not decide the question.
+    const words = matched.split(/\s+/).filter((w) => w.length >= 3);
+    if (words.length === 0) continue;
+
+    if (!words.every((w) => /^[\p{Lu}]/u.test(w))) continue;
+
+    const before = prompt.slice(0, match.index + match[1].length).trimEnd();
+    const atSentenceStart = before === "" || /[.!?]$/.test(before);
+    if (words.length === 1 && atSentenceStart) continue;
+
+    return true;
+  }
+
+  return false;
+}
+
 function finding(
   code: QualityFindingCode,
   severity: QualitySeverity,
@@ -429,7 +477,21 @@ export function buildQualityGateReport(input: QualityGateInput): StoryQualityGat
       }
 
       // The quota signature, at story level.
-      if (f.scenes.length >= 8 && f.turnsStdDev <= UNIFORM_DENSITY_STDDEV && f.dominantTurnCount) {
+      //
+      // A WORDLESS film trips every term of this test for the wrong reason:
+      // with no turns anywhere the standard deviation is 0, and
+      // `dominantTurnCount` is still a populated object - {turns: 0, ...} -
+      // so the truthiness check passes. The finding then fires on every
+      // silent film and reports that all its scenes carry the same amount of
+      // talk, which is true and useless. A dominant count of ZERO turns is the
+      // signature of a film with no dialogue, not of a quota being filled.
+      const uniformlySilent = f.dominantTurnCount?.turns === 0;
+      if (
+        !uniformlySilent &&
+        f.scenes.length >= 8 &&
+        f.turnsStdDev <= UNIFORM_DENSITY_STDDEV &&
+        f.dominantTurnCount
+      ) {
         findings.push(
           finding(
             "uniform-dialogue-density",
@@ -608,9 +670,7 @@ export function buildQualityGateReport(input: QualityGateInput): StoryQualityGat
       // the description.
       const prompt = clean(scene?.finalVideoPrompt);
       if (prompt && worldNames.length > 0) {
-        const named = worldNames.filter((name) =>
-          new RegExp(`(^|[^\\p{L}])${escapeForRegex(name)}([^\\p{L}]|$)`, "iu").test(prompt)
-        );
+        const named = worldNames.filter((name) => usedAsProperName(prompt, name));
         if (named.length > 0) {
           findings.push(
             finding(

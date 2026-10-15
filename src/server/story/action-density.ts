@@ -109,6 +109,25 @@ const STAGEABLE_VERB_STEMS = new Set([
   // stayed unclassified after the vocabulary was first widened.
   "rais", "star", "shak", "wav", "squeez", "slid", "plac", "shov", "ris",
   "shap", "strik", "sprinkl", "crouch",
+  // CREATURE MOTION. Added from a real 24-scene wordless farmyard film, where
+  // two scenes went unmeasured on "pounces" (S9) and "charges" (S11).
+  //
+  // This cost more there than it would in a talking film: with no dialogue,
+  // the action line is the ONLY thing the quality layer can read, so an
+  // unlisted verb means the shot gets no signal at all rather than a slightly
+  // thin one. The verbs below are how animals move, and the original list -
+  // built from people handling objects in a kitchen - had almost none of them.
+  //
+  // Both spellings are listed wherever the verb ends in a silent -e, because
+  // `tokenize` strips "-es": "pounces" stems to "pounc", never to "pounce".
+  "pounce", "pounc", "charge", "charg", "scramble", "scrambl", "huddle", "huddl",
+  "nestle", "nestl", "waddle", "waddl", "ruffle", "ruffl", "nudge", "nudg",
+  "wedge", "wedg", "lunge", "lung", "plunge", "plung", "dive", "div",
+  "chase", "chas", "freeze", "freez", "race", "rac", "circle", "circl",
+  "leap", "peck", "flap", "dart", "swoop", "perch", "scratch", "brood",
+  "tuck", "hop", "flutter", "strut", "preen", "ram", "snap", "claw",
+  "flee", "bolt", "scurri", "rush", "herd", "corral", "shelter", "shield",
+  "burrow", "flick", "twitch", "stomp", "thrash", "wriggle", "wriggl",
 ]);
 
 /**
@@ -121,6 +140,13 @@ const STAGEABLE_VERB_STEMS = new Set([
 const LOCOMOTION_VERB_STEMS = new Set([
   "walk", "run", "cross", "go", "come", "step", "return", "enter", "exit",
   "leav", "head", "carri", "carry", "lead", "climb", "march", "hurri", "hurry",
+  // Creature travel. Kept to verbs where the body unambiguously goes
+  // somewhere else - "pecks" and "flaps" are performed on the spot and stay
+  // out, or every feeding scene would read as a relocation. A relocation still
+  // needs a destination phrase as well, so this list alone cannot trip one.
+  "dart", "scurri", "bolt", "flee", "chase", "chas", "charge", "charg",
+  "scramble", "scrambl", "hop", "waddle", "waddl", "swoop", "race", "rac",
+  "rush", "dive", "div", "plunge", "plung",
 ]);
 
 /**

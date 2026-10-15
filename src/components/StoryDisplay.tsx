@@ -561,6 +561,7 @@ ${story.funQuestion ? `💡 DISCUSSION QUESTION:\n${story.funQuestion}\n` : ''}
             onRegenerateCharacters={onRegenerateCharacters}
             isRegeneratingCharacters={isRegeneratingCharacters}
             onPlayPop={onPlayPop}
+            pack={story.pack}
           />
         )}
 
@@ -577,6 +578,7 @@ ${story.funQuestion ? `💡 DISCUSSION QUESTION:\n${story.funQuestion}\n` : ''}
             isRegeneratingAll={isRegeneratingAllReferences}
             regeneratingCharacterId={regeneratingReferenceCharId}
             generatingImageCharacterId={generatingImageCharacterId}
+            pack={story.pack}
           />
         )}
 

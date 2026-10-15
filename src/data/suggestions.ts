@@ -464,6 +464,110 @@ export const TOPIC_SUGGESTIONS: TopicSuggestion[] = [
   },
 ];
 
+// ===========================================================================
+// FARMYARD CHICKS (pack: poultry)
+//
+// Wordless films, so every idea below has to be legible with NO dialogue: a
+// thing that happens, not a thing that is discussed. An idea whose point needs
+// explaining is the wrong idea for this pack.
+// ===========================================================================
+export const POULTRY_SUGGESTIONS: TopicSuggestion[] = [
+  {
+    label: "Teen Ande",
+    topic: "Teen ande, aur ek jo sab se baad mein toota - maa ka intezaar aur sab se chhote choozay ki pehli subah",
+    emoji: "🥚🐣",
+    language: "Roman Urdu",
+    pack: "poultry",
+    vibe: "Tender & Patient",
+    category: "Moral Story",
+    suggestedMode: "Heartwarming",
+    characters: ["Murghi Maa", "Sab se Chhota Choozay"],
+  },
+  {
+    label: "Bichhri Hui Choozi",
+    topic: "Ek choti choozi jo daane chugte chugte apni maa se bichhar gayi, aur sham hone se pehle wapas milne ka safar",
+    emoji: "🐥",
+    language: "Roman Urdu",
+    pack: "poultry",
+    vibe: "Lost & Found",
+    category: "Adventure",
+    suggestedMode: "Cinematic Emotional",
+    characters: ["Murghi Maa", "Choozi"],
+  },
+  {
+    label: "Baaz ka Saaya",
+    topic: "Aangan par baaz ka saaya guzra, aur murghi ne apne paron ke neeche saat choozon ko chhupa liya",
+    emoji: "🦅🐔",
+    language: "Roman Urdu",
+    pack: "poultry",
+    vibe: "Protective & Tense",
+    category: "Adventure",
+    suggestedMode: "Cinematic",
+    characters: ["Murghi Maa", "Baaz"],
+  },
+  {
+    label: "Pehli Baarish",
+    topic: "Choozon ne pehli baar baarish dekhi - kuch chhup gaye, ek bheeg kar naachne laga",
+    emoji: "🌧️🐣",
+    language: "Roman Urdu",
+    pack: "poultry",
+    vibe: "Playful & Curious",
+    category: "Comedy & Fun",
+    suggestedMode: "Funny & Slapstick",
+    characters: ["Choozay", "Murghi Maa"],
+  },
+  {
+    label: "तीन अंडे",
+    topic: "तीन अंडे, और एक जो सबसे बाद में टूटा - माँ का इंतज़ार और सबसे छोटे चूज़े की पहली सुबह",
+    emoji: "🥚🐣",
+    language: "Hindi",
+    pack: "poultry",
+    vibe: "Tender & Patient",
+    category: "Moral Story",
+    suggestedMode: "Heartwarming",
+    characters: ["मुर्गी माँ", "छोटा चूज़ा"],
+  },
+  {
+    label: "खोया हुआ चूज़ा",
+    topic: "एक छोटा चूज़ा जो दाना चुगते हुए अपनी माँ से बिछड़ गया, और शाम होने से पहले लौटने का सफ़र",
+    emoji: "🐥",
+    language: "Hindi",
+    pack: "poultry",
+    vibe: "Lost & Found",
+    category: "Adventure",
+    suggestedMode: "Cinematic Emotional",
+    characters: ["मुर्गी माँ", "चूज़ा"],
+  },
+  {
+    label: "تین انڈے",
+    topic: "تین انڈے، اور ایک جو سب سے بعد میں ٹوٹا - ماں کا انتظار اور سب سے چھوٹے چوزے کی پہلی صبح",
+    emoji: "🥚🐣",
+    language: "Urdu",
+    pack: "poultry",
+    vibe: "Tender & Patient",
+    category: "Moral Story",
+    suggestedMode: "Heartwarming",
+    characters: ["مرغی ماں", "چھوٹا چوزہ"],
+  },
+  {
+    label: "باز کا سایہ",
+    topic: "آنگن پر باز کا سایہ گزرا، اور مرغی نے اپنے پروں کے نیچے سات چوزوں کو چھپا لیا",
+    emoji: "🦅🐔",
+    language: "Urdu",
+    pack: "poultry",
+    vibe: "Protective & Tense",
+    category: "Adventure",
+    suggestedMode: "Cinematic",
+    characters: ["مرغی ماں", "باز"],
+  },
+];
+
+/** Every suggestion, both worlds. The picker filters by pack and language. */
+export const ALL_SUGGESTIONS: TopicSuggestion[] = [
+  ...TOPIC_SUGGESTIONS,
+  ...POULTRY_SUGGESTIONS,
+];
+
 export const FUN_VEGGIE_FACTS = [
   "🥕 Did you know? Carrots were originally purple and yellow before orange became famous!",
   "🍅 Fun Fact: Tomatoes are full of bright sunshine vitamins that make cheeks rosy!",

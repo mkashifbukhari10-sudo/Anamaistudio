@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { StoryLanguage, StoryMode, TopicSuggestion } from '../types';
-import { TOPIC_SUGGESTIONS } from '../data/suggestions';
+import { ALL_SUGGESTIONS } from '../data/suggestions';
+import { DEFAULT_PACK_ID } from '../shared/packs';
 import { Sparkles, Dices, X, Lightbulb, ChevronDown, ChevronUp, Check, Users, Layers, Search, Shuffle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -10,6 +11,8 @@ interface TopicInputProps {
   selectedLanguage: StoryLanguage;
   onPlayPop?: () => void;
   onSelectStoryMode?: (mode: StoryMode) => void;
+  /** Only ideas from this film world are offered. */
+  pack?: string;
 }
 
 type IdeaCategory = 'ALL' | 'Friendship' | 'Adventure' | 'Moral Story' | 'Comedy & Fun' | 'Mystery & Magic';
@@ -20,17 +23,26 @@ export const TopicInput: React.FC<TopicInputProps> = ({
   selectedLanguage,
   onPlayPop,
   onSelectStoryMode,
+  pack = DEFAULT_PACK_ID,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<IdeaCategory>('ALL');
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [shuffledSeed, setShuffledSeed] = useState<number>(0);
 
-  // Filter ideas strictly for the selected language
+  // Ideas for this world, in the selected language.
+  //
+  // The pack filter comes FIRST and is never relaxed: offering a vegetable
+  // premise inside a wordless farmyard film would seed a story the pipeline is
+  // then told to tell without dialogue, in a world with no vegetables in it.
+  // Language, by contrast, falls back as it always did - a world with no ideas
+  // written in the chosen language still shows its own ideas.
   const languageSuggestions = useMemo(() => {
-    const list = TOPIC_SUGGESTIONS.filter((s) => s.language === selectedLanguage);
-    return list.length > 0 ? list : TOPIC_SUGGESTIONS;
-  }, [selectedLanguage]);
+    const inPack = ALL_SUGGESTIONS.filter((s) => (s.pack ?? DEFAULT_PACK_ID) === pack);
+    const base = inPack.length > 0 ? inPack : ALL_SUGGESTIONS;
+    const list = base.filter((s) => s.language === selectedLanguage);
+    return list.length > 0 ? list : base;
+  }, [selectedLanguage, pack]);
 
   // Apply category and search filters
   const filteredSuggestions = useMemo(() => {

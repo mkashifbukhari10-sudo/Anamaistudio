@@ -2,6 +2,7 @@ import { SECONDS_PER_SCENE, SHOT_LENGTH_PHRASE } from "../../shared/duration.js"
 import { Type } from "../ai/schema.js";
 import { buildCraftDoctrine, buildSceneCraftRules, storyScale } from "./story-craft.js";
 import { buildRecurringSeriesBlock, type RecurringSeriesBible } from "./recurring-series.js";
+import { VEGETABLE_PACK, type StoryPack } from "../packs/index.js";
 import { buildLedger } from "./continuity-director.js";
 import {
   buildDialogueRegisterBlock,
@@ -136,7 +137,7 @@ export const BLUEPRINT_SCHEMA = {
         type: Type.OBJECT,
         properties: {
           name: { type: Type.STRING },
-          veggieType: { type: Type.STRING },
+          characterType: { type: Type.STRING },
           importance: { type: Type.STRING, description: "MAIN, SUPPORTING or MINOR" },
           narrativePurpose: { type: Type.STRING, description: "Why the story collapses without them" },
           want: { type: Type.STRING, description: "External, visible goal" },
@@ -152,7 +153,7 @@ export const BLUEPRINT_SCHEMA = {
           arcEnd: { type: Type.STRING },
           approxDialogueShare: { type: Type.INTEGER, description: "Rough percentage of spoken lines, all characters summing to about 100" },
         },
-        required: ["name", "veggieType", "importance", "narrativePurpose", "want", "need", "flaw", "voiceSignature", "arcStart", "arcMidpoint", "arcEnd", "approxDialogueShare"],
+        required: ["name", "characterType", "importance", "narrativePurpose", "want", "need", "flaw", "voiceSignature", "arcStart", "arcMidpoint", "arcEnd", "approxDialogueShare"],
       },
     },
     worldRegistry: {
@@ -456,6 +457,11 @@ export interface BlueprintContext {
    * episode of a series the user has defined.
    */
   seriesBible?: RecurringSeriesBible;
+  /**
+   * The film world this blueprint is for. Undefined means vegetables, which is
+   * what every caller written before packs existed implies.
+   */
+  pack?: StoryPack;
 }
 
 /**
@@ -491,6 +497,13 @@ export function buildBlueprintSystemInstruction(ctx: BlueprintContext): string {
   // — the normal path — nothing is prepended and generation is fully dynamic.
   const seriesBlock = ctx.seriesBible ? `${buildRecurringSeriesBlock(ctx.seriesBible)}\n\n` : "";
 
+  // The film world. Doctrine that only makes sense in THIS world - a wordless
+  // pack's account of what carries a scene when nobody speaks, for instance -
+  // is appended after the shared craft doctrine, so a pack can tighten the
+  // general rules but never silently replace them.
+  const pack = ctx.pack ?? VEGETABLE_PACK;
+  const packDoctrine = pack.extraDoctrine ? `\n\n${pack.extraDoctrine}` : "";
+
   return `${seriesBlock}${buildCraftDoctrine({
     storyMode: ctx.storyMode,
     targetSceneCount: ctx.targetSceneCount,
@@ -499,7 +512,7 @@ export function buildBlueprintSystemInstruction(ctx: BlueprintContext): string {
     storyScope: ctx.storyScope,
   })}
 
-You are a master animation story architect - the story department that works BEFORE any shot is planned. You are writing the structural blueprint for a ${ctx.duration} animated children's film ("${ctx.storyMode}" mode) told with anthropomorphic vegetable characters.
+You are a master animation story architect - the story department that works BEFORE any shot is planned. You are writing the structural blueprint for a ${ctx.duration} animated children's film ("${ctx.storyMode}" mode) told with ${pack.castDescription}.
 
 You are NOT writing scenes. You are deciding what the story IS, who it needs, and why each moment causes the next. Invent the world, the cast and the shape this particular topic requires.
 
@@ -636,7 +649,7 @@ IF THE PREMISE IS TOO SMALL FOR THE RUNTIME:
 - ADD STORY. A complication that raises cost. A consequence from earlier that lands now. A relationship that shifts. A real obstacle. A setup that pays off. A second source of pressure running underneath the first.
 - NEVER lengthen a beat to absorb the extra scenes. A stretched beat is the failure this rule exists to prevent, and it is visible to the audience within seconds.
 
-LANGUAGE: Story-facing text (beat names, chapter titles, logline) in ${ctx.language}. Structural analysis fields (purpose, causeFromPrevious, consequence, escalation, voiceSignature) in English so the scene department can execute them precisely.`;
+LANGUAGE: Story-facing text (beat names, chapter titles, logline) in ${ctx.language}. Structural analysis fields (purpose, causeFromPrevious, consequence, escalation, voiceSignature) in English so the scene department can execute them precisely.${packDoctrine}`;
 }
 
 export function buildBlueprintPrompt(ctx: BlueprintContext): string {
@@ -665,7 +678,9 @@ Setups must reference scene numbers inside 1 to ${ctx.targetSceneCount}.
     prompt += `\nLOCKED CHARACTERS - these must appear in the cast with these exact names and types. Build their goals, flaws and arcs around the existing identities:\n${JSON.stringify(
       ctx.lockedCharacters.map((c: any) => ({
         name: c.name,
-        veggieType: c.veggieType,
+        // Whichever spelling the saved cast carries. A story locked before the
+        // pack rename has only the legacy field.
+        characterType: c.characterType ?? c.veggieType,
         role: c.role,
         voiceRule: c.speakingStyle || c.personality || undefined,
       })),

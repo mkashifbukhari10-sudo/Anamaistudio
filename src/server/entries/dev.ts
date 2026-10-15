@@ -23,7 +23,7 @@ async function startDevServer() {
   app.use(vite.middlewares);
 
   const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Veggie Story Studio running on http://localhost:${PORT}`);
+    console.log(`AnamStudio running on http://localhost:${PORT}`);
     console.log(describeProviderSetup());
   });
 
@@ -35,6 +35,6 @@ async function startDevServer() {
 }
 
 startDevServer().catch((err) => {
-  console.error("Fatal error starting Veggie Story Studio dev server:", err);
+  console.error("Fatal error starting AnamStudio dev server:", err);
   process.exit(1);
 });

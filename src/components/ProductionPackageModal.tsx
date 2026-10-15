@@ -1,4 +1,5 @@
 import { SHOT_LENGTH_LABEL, SHOT_LENGTH_PHRASE } from '../shared/duration';
+import { findPack } from '../shared/packs';
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -31,6 +32,10 @@ export const ProductionPackageModal: React.FC<ProductionPackageModalProps> = ({
 }) => {
   const [copiedType, setCopiedType] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'preview' | 'json'>('preview');
+
+  // The film world this story came from, so the package a person reads names
+  // the cast's anatomy correctly - "Plumage & Beak" on a hen, not "Botanical".
+  const packInfo = findPack(story.pack);
 
   if (!isOpen) return null;
 
@@ -85,7 +90,7 @@ export const ProductionPackageModal: React.FC<ProductionPackageModalProps> = ({
       md += `- **Face Design:** ${char.faceDesign}\n`;
       md += `- **Eye Style & Color:** ${char.eyeStyleAndColor}\n`;
       md += `- **Mouth & Expression:** ${char.mouthStyle}\n`;
-      md += `- **Botanical Anatomy / Features:** ${char.veggieFeatures}\n`;
+      md += `- **${packInfo.anatomyFieldLabel}:** ${char.characterFeatures ?? char.veggieFeatures}\n`;
       md += `- **Clothing:** ${char.clothing}\n`;
       md += `- **Shoes:** ${char.shoes}\n`;
       md += `- **Accessories:** ${char.accessories}\n`;

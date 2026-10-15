@@ -47,6 +47,16 @@ export const CHARACTER_COUNT_OPTIONS: CharacterCount[] = ['Auto', 2, 3, 4, 5, 6]
 export interface CharacterBibleEntry {
   id: string;
   name: string;
+  /**
+   * What kind of thing this character is: a vegetable, a hen, a chick.
+   *
+   * `characterType` is the neutral name the model is asked for; `veggieType`
+   * is the original name that the client still reads in about fifteen places.
+   * The server fills BOTH on every character (see packs/character.ts), so the
+   * two are always equal and either may be read. `veggieType` is retained for
+   * compatibility and should not be used by new code.
+   */
+  characterType?: string;
   veggieType: string;
   role: string;
   personality: string;
@@ -55,6 +65,8 @@ export interface CharacterBibleEntry {
   faceDesign: string;
   eyeStyleAndColor: string;
   mouthStyle: string;
+  /** Domain anatomy: a leaf crown, a plumage pattern. Mirrors veggieFeatures. */
+  characterFeatures?: string;
   veggieFeatures: string;
   clothing: string;
   shoes: string;
@@ -344,6 +356,8 @@ export interface ScenePlannerItem {
 export interface CharacterReferencePackage {
   characterId: string;
   characterName: string;
+  /** Neutral name; always equal to veggieType, which is kept for compatibility. */
+  characterType?: string;
   veggieType: string;
   fullBodyPrompt: string;
   frontFacingPrompt: string;
@@ -718,6 +732,14 @@ export interface VeggieStory {
   animationStyle?: string;
   /** Cast-size control used for this story, so regeneration reuses it. */
   characterCount?: CharacterCount;
+  /**
+   * The film world this story was generated in ('vegetables', 'poultry', ...).
+   * Undefined on stories generated before packs existed, which are vegetables.
+   * Sent back on every regenerate call so a re-render stays in the same world.
+   */
+  pack?: string;
+  /** Display name of that world, for the UI. */
+  packLabel?: string;
   isLongForm?: boolean;
   estimatedScenesCount?: number;
   chapters?: StoryChapter[];
@@ -780,6 +802,11 @@ export interface TopicSuggestion {
   topic: string;
   emoji: string;
   language: StoryLanguage;
+  /**
+   * The film world this idea belongs to. Undefined means the default pack
+   * (vegetables), which is what every suggestion written before packs implies.
+   */
+  pack?: string;
   vibe: string;
   suggestedMode?: StoryMode;
   category?: 'Friendship' | 'Adventure' | 'Moral Story' | 'Comedy & Fun' | 'Mystery & Magic';

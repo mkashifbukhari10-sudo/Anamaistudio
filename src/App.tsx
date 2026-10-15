@@ -19,6 +19,8 @@ import { TopicInput } from './components/TopicInput';
 import { DurationSelector } from './components/DurationSelector';
 import { StyleSelector } from './components/StyleSelector';
 import { CharacterCountSelector } from './components/CharacterCountSelector';
+import { PackSelector } from './components/PackSelector';
+import { DEFAULT_PACK_ID, PACKS, findPack, type PackId } from './shared/packs';
 import { StoryDisplay } from './components/StoryDisplay';
 import { LoadingState, type GenerationProgressView } from './components/LoadingState';
 import { LoginScreen } from './components/LoginScreen';
@@ -82,9 +84,27 @@ export default function App() {
   // rather than flashing the login screen at someone who has a valid session.
   const [authUser, setAuthUser] = useState<AuthUser | null | undefined>(undefined);
 
+  // Which film world this story is told in. Decides the cast and, for a
+  // wordless pack, whether the film carries dialogue at all.
+  const [pack, setPack] = useState<PackId>(DEFAULT_PACK_ID);
   const [language, setLanguage] = useState<StoryLanguage>('Roman Urdu');
   const [storyMode, setStoryMode] = useState<StoryMode>('Cinematic Emotional');
-  const [topic, setTopic] = useState<string>('Gajar aur Tamatar ki dosti');
+  const [topic, setTopic] = useState<string>(findPack(DEFAULT_PACK_ID).defaultTopic);
+
+  /**
+   * Switch world, and carry the topic across only if it is the operator's own.
+   *
+   * A topic still sitting at some pack's starting value is not a choice, so it
+   * is replaced. Anything typed or picked is kept, because losing it would be
+   * the more annoying failure of the two.
+   */
+  const handleSelectPack = (next: PackId) => {
+    setTopic((current) => {
+      const isUntouched = PACKS.some((p) => p.defaultTopic === current.trim());
+      return isUntouched ? findPack(next).defaultTopic : current;
+    });
+    setPack(next);
+  };
   const [duration, setDuration] = useState<StoryDuration>('10 minutes');
   const [customMinutes, setCustomMinutes] = useState<number>(10);
   const [animationStyle, setAnimationStyle] = useState<AnimationStyle>('Cute 3D');
@@ -258,6 +278,7 @@ export default function App() {
           customMinutes,
           animationStyle,
           characterCount,
+          pack,
           lockedCharacters:
             lockedCharacters && lockedCharacters.length > 0 ? lockedCharacters : undefined,
         }),
@@ -312,6 +333,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // The world this story was generated in, so a re-render cannot
+          // silently fall back to the default pack.
+          pack: generatedStory.pack ?? pack,
           topic: topic.trim() || generatedStory.title,
           storyTitle: generatedStory.title,
           language: generatedStory.language,
@@ -357,6 +381,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // The world this story was generated in, so a re-render cannot
+          // silently fall back to the default pack.
+          pack: generatedStory.pack ?? pack,
           topic: topic.trim() || generatedStory.title,
           storyTitle: generatedStory.title,
           fullStoryText: generatedStory.fullStoryText,
@@ -419,6 +446,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // The world this story was generated in, so a re-render cannot
+          // silently fall back to the default pack.
+          pack: generatedStory.pack ?? pack,
           topic: topic.trim() || generatedStory.title,
           storyTitle: generatedStory.title,
           language: generatedStory.language,
@@ -465,6 +495,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // The world this story was generated in, so a re-render cannot
+          // silently fall back to the default pack.
+          pack: generatedStory.pack ?? pack,
           characters: generatedStory.characters,
           animationStyle: generatedStory.animationStyle,
         }),
@@ -500,6 +533,9 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // The world this story was generated in, so a re-render cannot
+          // silently fall back to the default pack.
+          pack: generatedStory.pack ?? pack,
           character: char,
           animationStyle: generatedStory.animationStyle,
         }),
@@ -753,7 +789,14 @@ export default function App() {
                   onSubmit={handleGenerateStory}
                   className="bg-white border border-slate-200 rounded-xl sm:rounded-2xl p-4 sm:p-8 space-y-5 sm:space-y-7 shadow-xs"
                 >
-                  {/* 1. Language Selector */}
+                  {/* 1. Story World (pack) - the most consequential choice */}
+                  <PackSelector
+                    value={pack}
+                    onChange={handleSelectPack}
+                    onPlayPop={handlePopSound}
+                  />
+
+                  {/* 2. Language Selector */}
                   <LanguageSelector
                     value={language}
                     onChange={setLanguage}
@@ -774,6 +817,7 @@ export default function App() {
                     selectedLanguage={language}
                     onPlayPop={handlePopSound}
                     onSelectStoryMode={setStoryMode}
+                    pack={pack}
                   />
 
                   {/* 4. Duration Selector (up to 10 minutes, 60 scenes) */}

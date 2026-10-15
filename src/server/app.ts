@@ -10,6 +10,18 @@ import {
 import { generateText, generateImage, MAX_SCENES_PER_BATCH } from "./ai/index.js";
 import { registerAuthRoutes, requireAuth } from "./auth/index.js";
 import { buildSceneCraftRules } from "./story/story-craft.js";
+import {
+  buildCharacterReferencePackage,
+  resolvePack,
+  isKnownPack,
+  isWordless,
+  listPacks,
+  normalizePackCharacter,
+  characterTypeOf,
+  buildPackSceneDoctrine,
+  DEFAULT_PACK_ID,
+  type StoryPack,
+} from "./packs/index.js";
 import { buildFeasibilityReport, wordEnvelope } from "./story/performance-budget.js";
 
 /**
@@ -156,51 +168,6 @@ function partitionSceneRanges(totalScenes: number, maxChunkSize: number = MAX_SC
   return ranges;
 }
 
-function buildCharacterReferencePackage(char: any, animationStyle: string = "Cute 3D"): any {
-  const style = animationStyle || "Cute 3D";
-  const name = char.name || "Veggie Character";
-  const type = char.veggieType || "Vegetable";
-  const body = char.bodyShape || "anthropomorphic toddler proportions";
-  const face = char.faceDesign || "friendly round cheeks with rosy blush";
-  const eyes = char.eyeStyleAndColor || "large expressive dark brown Pixar-style eyes";
-  const mouth = char.mouthStyle || "wide cheerful smile";
-  const features = char.veggieFeatures || "fresh leafy green top";
-  const clothing = char.clothing || "colorful dungarees with round buttons";
-  const shoes = char.shoes || "tiny matching sneakers";
-  const accessories = char.accessories || "none";
-  const colors = char.mainColors || "bright vibrant palette";
-
-  const fullBodyPrompt = `Full-body character reference of ${name}, a cute anthropomorphic ${type} in ${style} animation style. Clean neutral light gray studio background, soft cinematic studio key lighting, centered turnaround view from head to feet. Body proportions: ${body}. Facial features: ${face}, eyes: ${eyes}, mouth: ${mouth}. Botanical anatomy: ${features}. Wardrobe: ${clothing}, shoes: ${shoes}, accessories: ${accessories}. Color palette: ${colors}. Standing in a relaxed neutral A-pose with clear silhouette and crisp edge definition. Masterpiece 3D children's animation character asset, high resolution, no background elements or story environment.`;
-
-  const frontFacingPrompt = `Front-facing character reference portrait of ${name}, anthropomorphic ${type}, ${style} children's animation feature film quality. Direct frontal close-up angle centered on face and upper torso against a clean neutral off-white background. Showing detailed face design: ${face}, expressive eyes: ${eyes}, mouth: ${mouth}, green vegetable crown/stem: ${features}, collar and upper clothing: ${clothing}, accessories: ${accessories}. Symmetrical camera composition, soft even rim lighting, sharp texture detail, character model reference standard.`;
-
-  const characterSheetPrompt = `Professional 3D animation character model sheet of ${name} the anthropomorphic ${type}. Multiple views of the EXACT SAME character on a single clean neutral background: Front view, 3/4 front view, Side profile view, and Back view. Maintaining 100% identical body proportions (${body}), face (${face}, ${eyes}), vegetable anatomy (${features}), clothing (${clothing}), shoes (${shoes}), and palette (${colors}) across all 4 turnaround angles. Studio model sheet for Google Flow / Veo animation reference, uniform lighting, high consistency.`;
-
-  const expressionSheetPrompt = `Animation character expression sheet for ${name} (${type}), ${style} style. A grid showcasing 6 distinct emotional expressions of the SAME identical character: (1) Happy beaming smile, (2) Sad downturned pout with teary eyes, (3) Wide-eyed surprised gasp with raised eyebrows, (4) Excited cheering with starry eyes, (5) Worried / cautious look with tilted head, (6) Big laughing chuckle. Core visual identity is 100% locked: identical ${body}, ${features}, ${eyes}, ${clothing}, and ${colors}. Only facial muscles and mouth/brow shapes alter dynamically.`;
-
-  const flowVeoInstructions = `CRITICAL FLOW / VEO VISUAL CONSISTENCY INSTRUCTIONS FOR ${name.toUpperCase()} (${type.toUpperCase()}):
-1. ANATOMY & PROPORTIONS: Must strictly maintain ${body}. Do NOT alter torso height, limb proportions, or vegetable shape.
-2. BOTANICAL FEATURES: Fixed stem/leaf crown (${features}). Do NOT remove or modify leaf counts or sprout styles.
-3. FACIAL IDENTITY: ${face} with ${eyes} and ${mouth}. Eye color and catchlights must remain identical in every frame.
-4. LOCKED WARDROBE: Outfit must always be ${clothing}, footwear must always be ${shoes}, accessories: ${accessories}. Never switch clothing styles or colors.
-5. COLOR PALETTE: Strictly adhere to ${colors}.
-6. ANIMATION FLAVOR: ${style} Pixar/Illumination feel with squash-and-stretch physics.
-7. USAGE RULE: Treat this reference package as the authoritative visual Ingredient in Google Flow / Veo video generation. All scene generations must align with this locked asset.`;
-
-  const negativePrompt = `Avoid in all generations of ${name}: photorealistic human skin, realistic produce photographs, changed clothing, alternate colors, wrong eye color, different body shape, adult proportions, extra limbs, missing leaves, missing shoes, random accessories, realistic textures, dark gritty horror lighting, blurry artifacts, text, watermarks, logo overlays, deformed face, character redesign.`;
-
-  return {
-    characterId: char.id || `char_${type.toLowerCase().replace(/[^a-z0-9]/g, '')}`,
-    characterName: name,
-    veggieType: type,
-    fullBodyPrompt,
-    frontFacingPrompt,
-    characterSheetPrompt,
-    expressionSheetPrompt,
-    flowVeoInstructions,
-    negativePrompt,
-  };
-}
 
 // Scene schema for structured generation
 const SCENE_PROPERTIES = {
@@ -298,7 +265,7 @@ const SCENE_PROPERTIES = {
   charactersPresent: {
     type: Type.ARRAY,
     items: { type: Type.STRING },
-    description: "Array of vegetable characters in this shot",
+    description: "Array of characters present in this shot",
   },
   characterActions: { type: Type.STRING, description: `Exactly ONE primary visual action in this ${SECONDS_PER_SCENE}-second shot` },
   worldText: { type: Type.STRING, description: "Any writing that must appear IN FRAME - a banner, a sign, a price, a label - quoted exactly as it should read, or 'None'. If the same sign appears in several scenes, write it IDENTICALLY every time: rendered lettering is the least stable thing the video model produces, and the only defence is restating it word for word." },
@@ -528,6 +495,8 @@ async function generateScenesBatch(
     storyMemory?: any;
     /** Accumulated world state from every scene generated so far. */
     ledger?: any;
+    /** The film world. Omitted means vegetables. */
+    pack?: StoryPack;
   }
 ): Promise<any[]> {
   const {
@@ -548,6 +517,7 @@ async function generateScenesBatch(
     storyMemory,
     ledger,
   } = params;
+  const storyPack = resolvePack(params.pack?.id);
 
   // Story-first: the beats this range must dramatise, plus the beat either
   // side of it so cause and consequence survive the batch seam.
@@ -557,7 +527,12 @@ async function generateScenesBatch(
   const startTime = formatTimeRange(startScene).split("–")[0].trim();
   const endTime = formatTimeRange(endScene).split("–")[1].trim();
 
-  const systemInstruction = `You are a world-class children's animation director and cinematographer directing consecutive ${SECONDS_PER_SCENE}-second shots for the animated film "${title}".
+  // The pack's own rules go FIRST, because for a wordless film they have to
+  // outrank the dialogue instructions further down.
+  const packSceneDoctrine = buildPackSceneDoctrine(storyPack);
+  const systemInstruction = `${packSceneDoctrine ? `${packSceneDoctrine}
+
+` : ""}You are a world-class children's animation director and cinematographer directing consecutive ${SECONDS_PER_SCENE}-second shots for the animated film "${title}".
 Animation Style: ${animationStyle}
 Story Mode: ${storyMode}
 Language: ${language}
@@ -776,6 +751,8 @@ async function runSceneBatchPipeline(params: {
   blueprint?: any;
   /** Reports real scene counts as batches complete, for the progress bar. */
   onProgress?: (scenesDone: number, batchesDone: number, batchesTotal: number) => void;
+  /** The film world. Omitted means vegetables. */
+  pack?: StoryPack;
 }): Promise<SceneBatchOutcome> {
   const { targetSceneCount, logLabel } = params;
   const scenes: any[] = [];
@@ -829,6 +806,7 @@ async function runSceneBatchPipeline(params: {
         storyMemory: buildStoryMemory(scenes, params.blueprint),
         // Accumulated world state: where everyone is, what they hold, what is open.
         ledger: buildLedger(scenes),
+        pack: params.pack,
       });
       scenes.push(...batchScenes);
       completedBatches += 1;
@@ -917,9 +895,12 @@ function validateAndStandardizeTimeline(
     characters: any[];
     /** Optional: lets scenes be linked to registered places by name. */
     worldRegistry?: WorldRegistry | null;
+    /** The film world. Omitted means vegetables. */
+    pack?: StoryPack;
   }
 ): any[] {
   const { title, language, animationStyle, chapters, characters, worldRegistry } = storyContext;
+  const storyPack = resolvePack(storyContext.pack?.id);
 
   // One wording per sign, before any prompt is assembled. Each batch writes
   // 'worldText' without seeing the others, so a banner established in one scene
@@ -1127,6 +1108,10 @@ function validateAndStandardizeTimeline(
           // Derived from the film-level style, so all three batches emit the
           // same sentence instead of three competing ones.
           style: buildStyleLock(animationStyle),
+          // How this film handles speech. A wordless pack has to say so
+          // explicitly: given silence and no instruction, the video model
+          // invents mouth movement and drawn speech balloons.
+          speech: storyPack.speechDeclaration,
         });
       }
     }
@@ -1250,7 +1235,17 @@ export function createApp(options: CreateAppOptions = {}) {
 
   // API Health Check
   app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", app: "Veggie Story Studio" });
+    res.json({ status: "ok", app: "AnamStudio" });
+  });
+
+  /**
+   * The film worlds this build offers.
+   *
+   * Served rather than hardcoded in the client, so adding a pack is one server
+   * file and the picker populates itself.
+   */
+  app.get("/api/packs", (_req, res) => {
+    res.json({ success: true, data: { packs: listPacks(), defaultPackId: DEFAULT_PACK_ID } });
   });
 
   // Story Generation API Endpoint with Cinematic Long-Form Story Engine
@@ -1275,11 +1270,24 @@ export function createApp(options: CreateAppOptions = {}) {
         characterCount,
         storyScope,
         lockedCharacters,
+        pack,
       } = req.body;
 
       if (!topic || typeof topic !== "string" || !topic.trim()) {
         return res.status(400).json({ error: "Story topic is required." });
       }
+
+      // WHICH FILM WORLD. Absent or unrecognised resolves to vegetables, so
+      // every client written before packs existed keeps its exact behaviour.
+      // An unrecognised id is logged rather than rejected: producing the
+      // default film beats failing a generation the caller is waiting on.
+      const storyPack = resolvePack(pack);
+      if (pack && !isKnownPack(pack)) {
+        console.warn(
+          `[Pack] Unknown pack "${pack}" requested; falling back to "${storyPack.id}".`
+        );
+      }
+      console.log(`[Pack] ${storyPack.id} — ${storyPack.label} (dialogue: ${storyPack.dialogue}).`);
 
       const selectedLanguage = language || "Roman Urdu";
       const selectedDuration = duration || "60 seconds";
@@ -1349,6 +1357,12 @@ export function createApp(options: CreateAppOptions = {}) {
           lockedCharacters && Array.isArray(lockedCharacters) && lockedCharacters.length > 0
             ? lockedCharacters
             : undefined,
+        // The film world: its cast vocabulary and any doctrine specific to it.
+        pack: storyPack,
+        // A pack that is a standing series rather than a world generator feeds
+        // the blueprint's recurring-series hook. Undefined for both current
+        // packs, which invent a fresh cast per story.
+        seriesBible: storyPack.seriesBible,
       };
 
       startProgress(generationId, targetSceneCount);
@@ -1437,19 +1451,19 @@ export function createApp(options: CreateAppOptions = {}) {
       console.log(`[Beat density] ${summariseBeatDensity(beatDensity)}.`);
 
       const phase1SystemInstruction = `You are a master children's animation director and screenplay writer (Pixar / Illumination quality).
-You are creating the master screenplay, narrative, and Character Bible for a ${selectedDuration} (~${targetSceneCount} scenes) animated vegetable story.
+You are creating the master screenplay, narrative, and Character Bible for a ${selectedDuration} (~${targetSceneCount} scenes) ${storyPack.filmDescription}.
 
 STORY MODE: "${selectedMode}"
 - Cinematic Emotional: Deep emotional stakes, heartfelt connection, vulnerable character moments, grand orchestral beats, and a tearfully joyful resolution.
 - Cinematic: Sweeping movie-grade pacing, dramatic camera framing, atmospheric lighting.
-- Heartwarming: Gentle, tender moments of vegetable care, cozy comfort, and empathy.
+- ${storyPack.heartwarmingFlavour}
 - Moral Story / Friendship / Adventure / Funny / Mystery / Fantasy: Infuse authentic virtues and character arcs.
 
 ==================================================
 THE CAST IS ALREADY DECIDED BY THE STORY (CRITICAL):
 ==================================================
 - The story department has already designed this film's cast around what the narrative needs. NEVER default or hardcode to 2 characters, and never add, remove or rename anyone.
-- Use EXACTLY the ${blueprintCast.length} characters in the blueprint below, with their exact names, vegetable types and importance tiers.
+- Use EXACTLY the ${blueprintCast.length} characters in the blueprint below, with their exact names, ${storyPack.characterTypeLabel.toLowerCase()} values and importance tiers.
 - Generate the full 18-attribute Character Bible for EVERY single character in the cast.
 - Each character's design must EXPRESS their dramatic role: their want, need and flaw should be legible in body shape, wardrobe, colour palette and typical expressions. A character whose flaw is stubbornness should look planted; one whose need is to be seen should be dressed to disappear.
 - 'speakingStyle' and 'voicePersonality' must match the VOICE SIGNATURE the blueprint assigns them, so the scene department can write lines that are recognisable without a name tag.
@@ -1550,13 +1564,13 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
               },
               characters: {
                 type: Type.ARRAY,
-                description: "List of anthropomorphic vegetable characters with full 18-point Character Bible",
+                description: `List of ${storyPack.castDescription} with full 18-point Character Bible`,
                 items: {
                   type: Type.OBJECT,
                   properties: {
                     id: { type: Type.STRING },
                     name: { type: Type.STRING },
-                    veggieType: { type: Type.STRING },
+                    characterType: { type: Type.STRING, description: storyPack.characterTypeLabel },
                     role: {
                       type: Type.STRING,
                       description:
@@ -1573,7 +1587,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
                     faceDesign: { type: Type.STRING },
                     eyeStyleAndColor: { type: Type.STRING },
                     mouthStyle: { type: Type.STRING },
-                    veggieFeatures: { type: Type.STRING },
+                    characterFeatures: { type: Type.STRING, description: storyPack.featuresLabel },
                     clothing: { type: Type.STRING },
                     shoes: { type: Type.STRING },
                     accessories: { type: Type.STRING },
@@ -1588,7 +1602,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
                   },
                   required: [
                     "name",
-                    "veggieType",
+                    "characterType",
                     "role",
                     "personality",
                     "agePersonalityFeel",
@@ -1596,7 +1610,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
                     "faceDesign",
                     "eyeStyleAndColor",
                     "mouthStyle",
-                    "veggieFeatures",
+                    "characterFeatures",
                     "clothing",
                     "shoes",
                     "accessories",
@@ -1679,9 +1693,11 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
 
       storyData.characters = (storyData.characters || []).map((char: any, idx: number) => {
         const arc = findArc(char.name);
+        // Both field spellings, so the client's veggieType reads keep working
+        // while the model is asked for the neutral characterType.
         return {
-          ...char,
-          id: char.id || `char_${char.veggieType?.toLowerCase().replace(/[^a-z0-9]/g, "") || "veggie"}_${idx + 1}`,
+          ...normalizePackCharacter(char),
+          id: char.id || `char_${characterTypeOf(char).toLowerCase().replace(/[^a-z0-9]/g, "") || "char"}_${idx + 1}`,
           // Importance is a story decision, so the blueprint wins over position.
           importance: arc?.importance || char.importance || (idx < 2 ? "MAIN" : idx < 4 ? "SUPPORTING" : "MINOR"),
           // 'role' must describe what this character DOES to the plot. When the
@@ -1723,6 +1739,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         chapters: storyData.chapters,
         blueprint: narrativeBlueprint,
         logLabel: "Phase 2",
+        pack: storyPack,
         onProgress: (scenesDone, batchesDone, batchesTotal) =>
           setSceneProgress(generationId, scenesDone, batchesDone, batchesTotal),
       });
@@ -1748,6 +1765,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         chapters: storyData.chapters,
         characters: storyData.characters,
         worldRegistry,
+        pack: storyPack,
       });
 
       setPhase(generationId, "validating");
@@ -1771,6 +1789,11 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
       // inventing new ones.
       storyData.socialGraph = socialGraph;
       storyData.worldRegistry = worldRegistry;
+      // Which world this story came from, so a later regeneration of its
+      // scenes, cast or reference sheets re-renders in the same one instead of
+      // silently falling back to the default pack.
+      storyData.pack = storyPack.id;
+      storyData.packLabel = storyPack.label;
       storyData.storyScope = selectedScope;
       storyData.beatDensity = beatDensity;
       storyData.lifeJourney = lifeJourney;
@@ -1903,7 +1926,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
 
       // Automatically generate Character Reference Studio packages for each character
       storyData.characterReferences = storyData.characters.map((char: any) =>
-        buildCharacterReferencePackage(char, storyData.animationStyle || selectedStyle)
+        buildCharacterReferencePackage(char, storyData.animationStyle || selectedStyle, storyPack)
       );
 
       // Name the Ingredients each clip needs. The operator package used to go
@@ -1933,7 +1956,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
       finishProgress(generationId, "complete");
       return res.json({ success: true, data: { ...storyData, generationId } });
     } catch (error: any) {
-      console.error("Error generating veggie story:", error);
+      console.error("Error generating story:", error);
 
       // A failed run is the most useful thing to capture: the report keeps
       // whatever was produced before the failure plus the exact error.
@@ -1972,7 +1995,10 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         fullStoryText,
         topic,
         narrativeBlueprint,
+        pack,
       } = req.body;
+
+      const storyPack = resolvePack(pack);
 
       const currentText = fullStoryText || story?.fullStoryText;
       if (!currentText && !topic) {
@@ -2006,6 +2032,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         chapters: storyChapters,
         blueprint: storyBlueprint,
         logLabel: "Regenerate Scenes",
+        pack: storyPack,
       });
 
       if (generatedScenes.length === 0) {
@@ -2023,6 +2050,13 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         fullStoryText: currentText || topic,
         chapters: storyChapters,
         characters: storyChars,
+        // The registry was omitted here, so this path ran NO place-id scrub at
+        // all: a regenerated batch could ship "place_wash_terrace" into the
+        // Flow prompts and into the prose a person reads, and never resolve a
+        // scene's placeId against the registry. The blueprint carries the
+        // registry the first generation built, so the data was always in hand.
+        worldRegistry: storyBlueprint?.worldRegistry ?? null,
+        pack: storyPack,
       });
 
       const sceneGeneration = buildSceneGenerationReport(
@@ -2073,7 +2107,13 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         fullStoryText,
         topic,
         narrativeBlueprint,
+        pack,
       } = req.body;
+
+      // Same world as the film this shot belongs to, or the re-render would
+      // introduce its own seam: a different speech declaration, a different
+      // cast vocabulary.
+      const storyPack = resolvePack(pack);
 
       const sceneNum = sceneNumber || targetSceneNumber || existingScene?.sceneNumber || currentSceneData?.sceneNumber || 1;
       const expectedTimeRange = formatTimeRange(sceneNum);
@@ -2086,7 +2126,10 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
       const prevEnd = prevScene?.endState || prevScene?.characterActions || previousScenePrompt || "Opening shot of the film";
       const nextStart = nextScene?.startState || nextScene?.characterActions || nextScenePrompt || "Concluding resolution of the film";
 
-      const systemInstruction = `You are a world-class children's animation director regenerating a SINGLE ${SECONDS_PER_SCENE}-second shot (Scene #${sceneNum} covering ${expectedTimeRange}).
+      const packSceneDoctrine = buildPackSceneDoctrine(storyPack);
+      const systemInstruction = `${packSceneDoctrine ? `${packSceneDoctrine}
+
+` : ""}You are a world-class children's animation director regenerating a SINGLE ${SECONDS_PER_SCENE}-second shot (Scene #${sceneNum} covering ${expectedTimeRange}).
 Animation Style: ${selectedStyle}
 Story Mode: ${selectedMode}
 Language: ${selectedLanguage}
@@ -2184,6 +2227,7 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null, (characters || []).map((c: a
           // A re-rendered scene must carry the same style sentence as the
           // scenes around it, or the repair introduces its own seam.
           style: buildStyleLock(selectedStyle),
+          speech: storyPack.speechDeclaration,
         });
       }
       scene.negativePrompt = VIDEO_NEGATIVE_PROMPT;
@@ -2274,7 +2318,9 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null, (characters || []).map((c: a
   // Dedicated Character Bible Regeneration API Endpoint
   app.post("/api/regenerate-characters", async (req, res) => {
     try {
-      const { language, topic, storyMode, animationStyle, characterCount, lockedCharacters, socialGraph } = req.body;
+      const { language, topic, storyMode, animationStyle, characterCount, lockedCharacters, socialGraph, pack } = req.body;
+      // Same world as the story this cast belongs to.
+      const storyPack = resolvePack(pack);
       const selectedCharacterCount = normalizeCharacterCount(characterCount);
       // Social facts established earlier in the story survive a cast rebuild.
       // Without this, regenerating characters silently destroyed every
@@ -2288,7 +2334,7 @@ ${buildBlueprintPromptBlock(singleSceneSlice, null, (characters || []).map((c: a
       const selectedLanguage = language || "Roman Urdu";
       const selectedMode = storyMode || "Cinematic Emotional";
       const selectedStyle = animationStyle || "Cute 3D";
-      const systemInstruction = `You are a master character designer for animated vegetable children's stories in ${selectedStyle} style and mode "${selectedMode}".
+      const systemInstruction = `You are a master character designer for ${storyPack.filmDescription} children's stories, told with ${storyPack.castDescription}, in ${selectedStyle} style and mode "${selectedMode}".
 Generate a comprehensive, reusable "Character Bible" for all characters suitable for the story topic.
 
 ${selectedCharacterCount !== undefined
@@ -2311,7 +2357,7 @@ THESE SOCIAL FACTS ARE ALREADY ESTABLISHED AND MUST SURVIVE THIS REGENERATION:
   : ""}
 For EVERY character, generate all 18 attributes:
 1. Character name
-2. Vegetable type
+2. ${storyPack.characterTypeLabel}
 3. Role in the story
 4. Importance ('MAIN', 'SUPPORTING', or 'MINOR')
 5. Personality
@@ -2320,7 +2366,7 @@ For EVERY character, generate all 18 attributes:
 8. Face design
 9. Eye style and color
 10. Mouth/expression style
-11. Vegetable-specific physical features
+11. ${storyPack.featuresLabel}
 12. Clothing
 13. Shoes
 14. Accessories
@@ -2362,7 +2408,7 @@ CRITICAL:
                   properties: {
                     id: { type: Type.STRING },
                     name: { type: Type.STRING },
-                    veggieType: { type: Type.STRING },
+                    characterType: { type: Type.STRING, description: storyPack.characterTypeLabel },
                     role: {
                       type: Type.STRING,
                       description:
@@ -2379,7 +2425,7 @@ CRITICAL:
                     faceDesign: { type: Type.STRING },
                     eyeStyleAndColor: { type: Type.STRING },
                     mouthStyle: { type: Type.STRING },
-                    veggieFeatures: { type: Type.STRING },
+                    characterFeatures: { type: Type.STRING, description: storyPack.featuresLabel },
                     clothing: { type: Type.STRING },
                     shoes: { type: Type.STRING },
                     accessories: { type: Type.STRING },
@@ -2394,7 +2440,7 @@ CRITICAL:
                   },
                   required: [
                     "name",
-                    "veggieType",
+                    "characterType",
                     "role",
                     "personality",
                     "agePersonalityFeel",
@@ -2402,7 +2448,7 @@ CRITICAL:
                     "faceDesign",
                     "eyeStyleAndColor",
                     "mouthStyle",
-                    "veggieFeatures",
+                    "characterFeatures",
                     "clothing",
                     "shoes",
                     "accessories",
@@ -2429,8 +2475,8 @@ CRITICAL:
 
       const parsed = JSON.parse(rawJson);
       const characters = (parsed.characters || []).map((char: any, idx: number) => ({
-        ...char,
-        id: char.id || `char_${char.veggieType?.toLowerCase().replace(/[^a-z0-9]/g, "") || "veggie"}_${idx + 1}`,
+        ...normalizePackCharacter(char),
+        id: char.id || `char_${characterTypeOf(char).toLowerCase().replace(/[^a-z0-9]/g, "") || "char"}_${idx + 1}`,
         importance: char.importance || (idx < 2 ? "MAIN" : idx < 4 ? "SUPPORTING" : "MINOR"),
         isLocked: true,
       }));
@@ -2448,7 +2494,8 @@ CRITICAL:
   // Dedicated Character Reference Studio Packages Regeneration Endpoint (All Characters)
   app.post("/api/regenerate-character-references", async (req, res) => {
     try {
-      const { characters, animationStyle } = req.body;
+      const { characters, animationStyle, pack } = req.body;
+      const storyPack = resolvePack(pack);
 
       if (!characters || !Array.isArray(characters) || characters.length === 0) {
         return res.status(400).json({ error: "Characters array is required." });
@@ -2456,7 +2503,7 @@ CRITICAL:
 
       const style = animationStyle || "Cute 3D";
       const references = characters.map((char: any) =>
-        buildCharacterReferencePackage(char, style)
+        buildCharacterReferencePackage(char, style, storyPack)
       );
 
       // Standard envelope: { success, data }. Top-level keys kept temporarily for compatibility.
@@ -2472,14 +2519,15 @@ CRITICAL:
   // Dedicated Single Character Reference Package Regeneration Endpoint
   app.post("/api/regenerate-single-character-reference", async (req, res) => {
     try {
-      const { character, animationStyle } = req.body;
+      const { character, animationStyle, pack } = req.body;
+      const storyPack = resolvePack(pack);
 
       if (!character || !character.name) {
         return res.status(400).json({ error: "Character data is required." });
       }
 
       const style = animationStyle || "Cute 3D";
-      const reference = buildCharacterReferencePackage(character, style);
+      const reference = buildCharacterReferencePackage(character, style, storyPack);
 
       // Standard envelope: { success, data }. Top-level keys kept temporarily for compatibility.
       return res.json({ success: true, reference, data: { reference } });

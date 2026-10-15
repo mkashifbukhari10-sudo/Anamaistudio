@@ -25,7 +25,7 @@ app.get("*", (_req, res) => {
 });
 
 const server = app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Veggie Story Studio running on http://localhost:${PORT}`);
+  console.log(`AnamStudio running on http://localhost:${PORT}`);
 });
 
 // Long-form generation holds one request open far longer than Node's defaults

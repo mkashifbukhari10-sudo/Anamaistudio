@@ -101,12 +101,32 @@ const BODY_START_MARKER =
  * sound - and a stack of parts can be read as a page layout. This says it is one
  * continuous piece of film before any of the parts are read.
  */
-export const SHOT_DECLARATION =
+const SHOT_DECLARATION_BODY =
   "A single continuous live-action-style animated film shot, filmed in one " +
   "unbroken take by one moving camera. The whole frame is one picture at all " +
   "times: no panels, no split screen, no grid, no storyboard, no comic layout, " +
   "no inset frames, and no written words or speech balloons drawn over the " +
-  "picture. All dialogue is SPOKEN aloud by the characters and lip-synced.";
+  "picture.";
+
+/**
+ * How speech is rendered, on the dialogue-bearing default.
+ *
+ * A wordless pack replaces this through `applyFrameBookends`, and must say
+ * something rather than nothing: a video model handed silence with no
+ * instruction invents mouth movement, and - measured in a real generation -
+ * also invents drawn speech balloons. The declaration is the one place in the
+ * prompt where that is settled before any content is read.
+ */
+export const DEFAULT_SPEECH_DECLARATION =
+  "All dialogue is SPOKEN aloud by the characters and lip-synced.";
+
+export const SHOT_DECLARATION = `${SHOT_DECLARATION_BODY} ${DEFAULT_SPEECH_DECLARATION}`;
+
+/** The declaration with this film's own account of speech. */
+export function shotDeclaration(speech?: string): string {
+  const clause = String(speech ?? "").trim() || DEFAULT_SPEECH_DECLARATION;
+  return `${SHOT_DECLARATION_BODY} ${clause}`;
+}
 
 /**
  * How the two seam frames are introduced.
@@ -302,6 +322,11 @@ export function applyFrameBookends(
     worldText?: string;
     bystanders?: string;
     style?: string;
+    /**
+     * This film's account of how speech is rendered. Omitted means the
+     * dialogue-bearing default, so every existing caller is unchanged.
+     */
+    speech?: string;
   }
 ): string {
   // The style preamble is stripped BEFORE the frame statements, because a
@@ -320,7 +345,7 @@ export function applyFrameBookends(
   // prompt is a stack of labelled sections and the model was reading it as a
   // layout brief. This states what kind of thing is being made before it reads
   // any of the parts.
-  sections.push(SHOT_DECLARATION);
+  sections.push(shotDeclaration(frames.speech));
   // Second, before any content: what this film looks like. Byte-identical in
   // every scene, so three batches cannot render three different-looking films.
   if (style) sections.push(style);

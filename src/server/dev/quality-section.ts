@@ -473,10 +473,37 @@ export function buildQualityGateSection(
   );
 
   if (actionDensity && actionDensity.unclassified.length > 0) {
+    // Report the REASON the measurement actually recorded.
+    //
+    // This line used to say "written in another language" for every
+    // unclassified scene, whatever the cause. A real wordless film had two
+    // scenes unmeasured on "pounces" and "charges" - plain English, simply not
+    // in the staging vocabulary - and the report sent the reader looking for a
+    // language problem that was not there. The distinction matters because the
+    // two have opposite fixes: widen the verb list, or write the action line
+    // in English.
+    const byReason = actionDensity.unclassifiedByReason ?? {};
+    const explain: Record<string, string> = {
+      "unrecognised-phrasing":
+        "the action line is English but none of its verbs are in the staging vocabulary — the verb list needs widening, not the scene rewriting",
+      "unsupported-language":
+        "the action line is not written in English, and the staging vocabulary is English",
+      "insufficient-evidence": "the scene carries too little action text to measure",
+    };
+
+    const parts = Object.entries(byReason)
+      .filter(([, scenes]) => Array.isArray(scenes) && scenes.length > 0)
+      .map(
+        ([reason, scenes]) =>
+          `**${reason}** (${scenes.length}): ${explain[reason] ?? "reason not recorded"}. Scenes: ${scenes
+            .slice(0, 20)
+            .join(", ")}${scenes.length > 20 ? "…" : ""}`
+      );
+
     lines.push(
       `> **Action density could not classify ${actionDensity.unclassified.length} scene(s).** ` +
-        `The staging vocabulary is English; where the action line is written in another language it is reported as unclassified rather than as clean. ` +
-        `Scenes: ${actionDensity.unclassified.slice(0, 20).join(", ")}${actionDensity.unclassified.length > 20 ? "…" : ""}`,
+        `Unclassified is reported rather than treated as clean.` +
+        (parts.length > 0 ? `\n>\n> ${parts.join("\n>\n> ")}` : ""),
       ""
     );
   }
