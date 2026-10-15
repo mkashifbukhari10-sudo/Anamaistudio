@@ -207,7 +207,21 @@ export function stripSpeakerLabelsInQuotes(
 
   const alternation = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
   // The label sits immediately after an opening quote; the quote itself stays.
-  const pattern = new RegExp(`(["'“‘])\\s*(?:${alternation})\\s*:\\s*`, "gi");
+  //
+  // The name may be WRAPPED. A real 36-scene generation wrote the schema's own
+  // notation straight into the prompt - `whispering: "<Gulgul>: Do ungli ooper"`
+  // - in fifteen places across one batch, and the original pattern, which
+  // expected the name to touch the quote, matched none of them: the '<' sits
+  // between. Veo speaks what it is given, so each of those clips would have
+  // said the character's name out loud before the line.
+  //
+  // Angle brackets are what section 5 of the instruction uses, so they are the
+  // form the model reaches for; square and round brackets are included because
+  // they cost nothing and are the obvious neighbouring mistakes.
+  const pattern = new RegExp(
+    `(["'“‘])\\s*[<\\[(]?\\s*(?:${alternation})\\s*[>\\])]?\\s*:\\s*`,
+    "gi"
+  );
 
   return prompt.replace(pattern, "$1");
 }

@@ -278,9 +278,17 @@ function carrySubjectForward(beats: string[], scene: any): string[] {
     // having a subject, when Kaddu Dada is the object and the actor is
     // whoever acted in the beat before.
     const opening = beat.trim().split(/\s+/).slice(0, 4);
-    const opensWithName = opening.some((w) =>
-      nameTokens.has(w.toLowerCase().replace(/['’]s$/, "").replace(/[^a-z]/gi, ""))
-    );
+    // A name that follows a PREPOSITION is the target of the action, not its
+    // performer. "turns authoritatively to Lal Baigan who plants his hands ..."
+    // put "Lal" inside the four-word window, so the beat was read as already
+    // having a subject and shipped with nobody performing it - Veo then picks
+    // whoever it likes. Restricting the window was not enough; the grammar has
+    // to be checked too.
+    const opensWithName = opening.some((w, i) => {
+      const token = w.toLowerCase().replace(/['’]s$/, "").replace(/[^a-z]/gi, "");
+      if (!nameTokens.has(token)) return false;
+      return i === 0 || !PREPOSITION.test(opening[i - 1].replace(/[^a-z]/gi, ""));
+    });
 
     if (opensWithName) {
       const named = present.find((name: string) =>
@@ -319,6 +327,13 @@ const SUBORDINATOR =
 
 /** Strong clause boundaries. A comma only splits when it hands over with and/then. */
 const CLAUSE_BOUNDARY = /[;.]|,\s+(?:and\s+then|and|then)\s+/;
+
+/**
+ * Prepositions. A character name directly after one of these is what the action
+ * is aimed AT, never who performs it.
+ */
+const PREPOSITION =
+  /^(?:to|at|toward|towards|for|with|from|into|onto|on|in|behind|beside|near|past|over|under|against|of|by|beneath|below|above|around|before|after|between|through)$/i;
 
 /** Connectives a clause may open with before naming its subject. */
 const CLAUSE_LEAD = /^(?:and|then|now|finally|meanwhile|suddenly|immediately)\s+/i;
@@ -536,7 +551,14 @@ export function renderBeatClock(clock: BeatClock): string {
     if (i === last) {
       return span < 1 ? `and it closes as ${body}` : `and through the last ${seconds(span)}, ${body}`;
     }
-    if (i === middleAnchor) return `around ${seconds(row.startSeconds)} in, ${body}`;
+    // "around under a second in" is what `seconds()` produces for a beat that
+    // starts almost immediately, and it shipped twice in a real film. A beat
+    // that early has no useful number - it is simply what happens next.
+    if (i === middleAnchor) {
+      return row.startSeconds < 1
+        ? `almost at once, ${body}`
+        : `around ${seconds(row.startSeconds)} in, ${body}`;
+    }
     return `then ${body}`;
   });
 

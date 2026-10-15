@@ -455,9 +455,47 @@ export function stripStylePreamble(prompt: string): string {
     rest = rest.replace(/^\s+/, "");
     if (!rest) break;
     text = rest.charAt(0).toUpperCase() + rest.slice(1);
+    text = repairProperNounOpening(text);
   }
 
   return text;
+}
+
+/**
+ * Words that may open a sentence with a capital without being a proper noun.
+ * Without this, "A warm, humble kitchen corner." would be mistaken for a place
+ * label and given a preposition it does not need.
+ */
+const SENTENCE_OPENER = /^(?:a|an|the|his|her|its|their|this|that|two|three|one)$/i;
+
+/**
+ * Re-attaches a preposition when the style cut leaves a bare place label.
+ *
+ * "Children's 3D cartoon animation OF Dhobi Chabootra, a warm round taro root
+ * mother kneels ..." cuts at the connective - correct when what follows is a
+ * character - and leaves "Dhobi Chabootra, a warm round taro root mother
+ * kneels ...", which opens on a place name dangling as an appositive. Two real
+ * prompts shipped that way.
+ *
+ * A label is recognised by having NO lowercase word before the first comma
+ * inside the opening few words: "Dhobi Chabootra," qualifies, "A warm, humble
+ * kitchen corner." does not, and a long character description never reaches its
+ * comma inside the window at all.
+ */
+function repairProperNounOpening(text: string): string {
+  const comma = text.indexOf(",");
+  if (comma < 0) return text;
+
+  const head = text.slice(0, comma).trim();
+  const words = head.split(/\s+/);
+  if (words.length === 0 || words.length > 4) return text;
+  if (SENTENCE_OPENER.test(words[0])) return text;
+
+  // Every word capitalised (or a number) means a name, not a sentence.
+  const allProper = words.every((w) => /^[0-9]/.test(w) || /^[A-ZÀ-ɏ]/.test(w));
+  if (!allProper) return text;
+
+  return `At ${text}`;
 }
 
 /**

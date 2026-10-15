@@ -605,6 +605,7 @@ ${buildSceneCraftRules({ storyMode, targetSceneCount: totalScenes, duration, lan
    - The prompt body you DO write is: the full locked visual description of every character present, ONE continuous ${SECONDS_PER_SCENE}-second action with the dialogue quoted inside it, motivated camera movement, lighting direction and colour temperature, Foley sound effects, and score.
    - CARRY THE CONVERSATION ACROSS THE JOIN. Every scene records 'openThread': whatever is still hanging as it ends - a question asked and not answered, a line cut off, a held look, an offer not taken. The NEXT scene inherits it and must engage it: answer it, refuse it, interrupt it, or have someone deliberately change the subject. A story where every scene opens a new topic and closes it reads as a set of separate clips, which is the exact fault being fixed. Set it to 'None' when the scene genuinely closes its beat - at an act break, a time jump, or a resolution. A hook at EVERY join is as mechanical as none at all.
    - EVERY PERSON ON SCREEN IS DOING SOMETHING. For each spoken turn, 'accompanyingAction' must say what the SPEAKER does while saying it AND what the LISTENER does in response - the glance away, the hands, the half-step back. 'accompanyingAction' MUST NOT RESTATE A BEAT ALREADY WRITTEN IN 'characterActions'. Both fields are assembled into ONE timeline for the shot, so a beat written in both is scheduled TWICE inside the same ${SECONDS_PER_SCENE} seconds - a measured third of all spoken turns across two real films did exactly this, producing clips told to shut the same door twice and to point at the same mat twice. 'characterActions' carries the shot's physical progression; 'accompanyingAction' carries only what that progression does not already say - the speaker's face, hands and posture WHILE the line is spoken, and the listener's reaction to hearing it. If the only thing you would write there is the beat again, write the LISTENER instead. For anyone present who never speaks in the scene, fill 'bystanders' with what they are doing and where their attention is. Leave 'bystanders' empty only when a character is alone or when everyone present speaks. A character standing in frame with nothing planned is rendered standing still.
+   - NEVER PUT A PROPER NAME OF A PLACE OR OBJECT IN THE PROMPT. Flow has never heard of your world. A name it cannot picture renders as nothing, or as garbled lettering. Write what the thing LOOKS LIKE instead. A real film shipped 'Pital Ka Ghanta rests silently under an old tree' and 'Bada Lohe Ka Chabi Paana rests untouched' - Flow was told to render two objects it had no description of. Write 'a large hanging bronze gong rests silently under an old tree' and 'a heavy iron gate wrench rests untouched'. The same holds for the names of places: not 'on Dhobi Chabootra' but 'on the wash terrace, its flagstones wet with rinse water'. Proper names belong in the scene fields a PERSON reads - 'environment', 'props', 'continuityState' - and never in 'finalVideoPrompt'.
    - WRITING IN FRAME: if the shot shows a banner, sign, price, label or any other readable text, put the exact wording in 'worldText'. Rendered lettering is the least stable thing the video model produces, so whenever that same sign appears again in a later scene, write it CHARACTER FOR CHARACTER the same. Do not paraphrase it, do not translate it, do not shorten it. If the shot shows no writing, set it to 'None' - inventing signage gives the model something new to garble.
    - BACKGROUND POPULATION: if a crowd, passers-by or animals are present, record them in 'continuityState.backgroundCast' and describe them the SAME way in every scene they appear in. An unnamed crowd is re-invented from scratch in the next shot.
    - A BEAT CLOCK is attached automatically, timing every action beat and every spoken line across the ${SECONDS_PER_SCENE} seconds. It is built from 'characterActions' and 'dialogueTurns', so write those as an ORDERED sequence: put the beats in the order they happen, separated by "then" (or the equivalent in ${language}), and put 'dialogueTurns' in the order the lines are spoken. A scene whose action is one unbroken move is fine and stays one beat - do not chop a continuous action into steps to make the clock longer.
@@ -1079,6 +1080,11 @@ function validateAndStandardizeTimeline(
         scene.endState = scrubPlaceIds(scene.endState, worldRegistry);
         scene.nextSceneHandoff = scrubPlaceIds(scene.nextSceneHandoff, worldRegistry);
         scene.finalVideoPrompt = scrubPlaceIds(scene.finalVideoPrompt, worldRegistry);
+        // 'props' was missed, and a real package printed "resting under a
+        // distant tree on place_wash_terrace" to the reader. Every prose field
+        // a person sees has to be scrubbed, not just the ones feeding Flow.
+        scene.props = scrubPlaceIds(scene.props, worldRegistry);
+        scene.characterActions = scrubPlaceIds(scene.characterActions, worldRegistry);
       }
 
       // Strip any cross-scene reference the model emitted anyway. Flow renders
@@ -1859,6 +1865,7 @@ ${JSON.stringify(narrativeBlueprint.chapters || [], null, 2)}
         beatDensity: beatDensity,
         storyQuality: storyData.storyQuality,
         lifeJourney: lifeJourney,
+        worldRegistry: worldRegistry,
       });
       console.log(`[Quality gate] ${summariseQualityGate(storyData.qualityGate)}.`);
 

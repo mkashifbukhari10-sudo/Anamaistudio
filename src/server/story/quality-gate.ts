@@ -108,6 +108,11 @@ function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/** A literal string made safe to drop into a RegExp. */
+function escapeForRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function finding(
   code: QualityFindingCode,
   severity: QualitySeverity,
@@ -148,6 +153,8 @@ export interface QualityGateInput {
   /** Existing StoryQualityReport, for setups and place concentration. */
   storyQuality?: any;
   lifeJourney?: any;
+  /** Place and entity names, so the gate can spot ones Flow cannot picture. */
+  worldRegistry?: { places?: Array<{ name?: string }>; entities?: Array<{ name?: string }> } | null;
 }
 
 export function buildQualityGateReport(input: QualityGateInput): StoryQualityGateReport {
@@ -466,6 +473,17 @@ export function buildQualityGateReport(input: QualityGateInput): StoryQualityGat
     // rather than a clean bill of health.
     const seenWorldText = new Map<string, number>();
 
+    // Every registered place and entity name, longest first so a compound name
+    // is reported rather than the single word inside it. Short names are
+    // dropped: a two-letter name matches half the prose in the film.
+    const worldNames: string[] = [
+      ...(input.worldRegistry?.places ?? []),
+      ...(input.worldRegistry?.entities ?? []),
+    ]
+      .map((x) => clean(x?.name))
+      .filter((x) => x.length >= 4)
+      .sort((a, b) => b.length - a.length);
+
     for (const scene of scenes) {
       const n = Number(scene?.sceneNumber) || 0;
       const type = String(scene?.contract?.performanceType ?? "").trim();
@@ -577,6 +595,33 @@ export function buildQualityGateReport(input: QualityGateInput): StoryQualityGat
             }
           }
           seenWorldText.set(key, n);
+        }
+      }
+
+      // A place or object named in the prompt that Flow has no description of.
+      //
+      // The registry's names are the STORY's names - "Pital Ka Ghanta",
+      // "Dhobi Chabootra" - and a real film put eight of them into the video
+      // prompts. Flow has never heard of any of them, so it renders nothing
+      // where the gong should be, or invents garbled lettering. The scene
+      // fields a person reads are the right home for a name; the prompt needs
+      // the description.
+      const prompt = clean(scene?.finalVideoPrompt);
+      if (prompt && worldNames.length > 0) {
+        const named = worldNames.filter((name) =>
+          new RegExp(`(^|[^\\p{L}])${escapeForRegex(name)}([^\\p{L}]|$)`, "iu").test(prompt)
+        );
+        if (named.length > 0) {
+          findings.push(
+            finding(
+              "unrenderable-proper-noun",
+              "warn",
+              [n],
+              `Scene ${n}'s prompt names ${named.length} thing(s) Flow cannot picture`,
+              `Named without description: ${named.map((x) => `"${x}"`).join(", ")}.`,
+              "Replace the proper name with what it looks like - \"a large hanging bronze gong\", not its name. Names belong in the fields a person reads."
+            )
+          );
         }
       }
 

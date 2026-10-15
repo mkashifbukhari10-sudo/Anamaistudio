@@ -1302,6 +1302,7 @@ export type QualityFindingCode =
   // --- production continuity (consumes the frame handoff + world text) ---
   | 'frame-handoff-missing'
   | 'world-text-unstable'
+  | 'unrenderable-proper-noun'
   // --- shot timing (consumes the beat clock) ---
   | 'beat-clock-overflows'
   // --- story level (consumes P1 + existing quality report) ---
